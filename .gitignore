@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+replay.json
+kaggriculture-data/
+src/optuna_study.db

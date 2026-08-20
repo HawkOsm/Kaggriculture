@@ -1,0 +1,97 @@
+# Test Log
+
+See [`README.md`](README.md) for the entry format and convention. Newest first.
+
+---
+
+## 2026-08-20 — submission/main.py: build + verification for first Kaggle submission
+- Command: ad hoc Python, loading `submission/main.py` via the exact file-path mechanism `kaggle_environments` uses (`env.run(['submission/main.py', opponent])`, not a direct import), vs melon_maxxer (both seats), multi_crop, random, and self-play
+- Result: vs melon_maxxer 28710/30098 (as P0/P1); vs multi_crop 31234 vs 5921; vs random 31299 vs 0; self-play 20010 vs 21564. All DONE/DONE, no stderr output (zero swallowed exceptions), numbers consistent with `robust_agent.py` + `best_config.json`'s previously-verified performance.
+- Notes: single self-contained file (`src/robust_agent.py` + `src/farm_utils.py` inlined, `src/best_config.json`'s tuned values merged over `DEFAULT_CONFIG` and baked in as a literal dict) rather than a multi-file tar.gz bundle -- avoids any sibling-import path risk on a real submission with a 5/day limit. Confirmed via `kaggle_environments.agent.build_agent`/`get_last_callable` source that the loader takes the *last callable bound in module namespace* after exec'ing the file, not a specifically-named function -- `agent = make_agent(CONFIG)` is deliberately the last statement in the file. 20KB, well under the 100 MiB submission limit. This file is generated from `src/` by hand right now; if `src/robust_agent.py`/`farm_utils.py`/`best_config.json` change, regenerate rather than let it drift out of sync.
+
+## 2026-08-20 — optimize.py: re-run with the fixed promotion gate
+- Command: `python src/optimize.py --n-trials 200 --n-jobs 10 --opponents melon_maxxer,multi_crop,champion --verification-episodes 10`
+- Result: 134 complete trials, 66 pruned. Search's own best trial margin (noisy, 2 episodes x 3-opponent pool): 14848.8 -- looked promising. **Dedicated candidate-vs-champion verification (10 episodes): 0W-10L-0T, avg margin -5843.2** -- decisively lost every single game against the champion it was supposedly beating.
+- Notes: strong confirmation the promotion-gate fix (previous entry) was necessary: a config the search ranked as its best (via the noisy mixed-pool trial value) turned out to lose 10/10 in a clean, dedicated head-to-head. Under the old `if best.value > 0` gate this would have been promoted -- a real regression, not just an unproven lateral move like last time. `best_config.json` correctly left unchanged. Also fixed a separate bug while reviewing this: `_log_outcome` was appending to the end of `LOG.md` instead of inserting after the header, silently burying automated entries at the bottom out of newest-first order (this run's entry had to be manually moved here from the end of the file). `optimize.py` now inserts new entries in the correct position.
+
+## 2026-08-20 — optimize.py promotion-logic fix + revert of the previous round's promotion
+- Command: ad hoc Python, dedicated 6-episode candidate-vs-champion head-to-head (the search's promoted config vs the config it replaced), alternating seats; plus 3 trials each vs melon_maxxer/multi_crop and a self-play check
+- Result: candidate won only **2/6** vs the champion it had just replaced, avg margin +448 -- indistinguishable from noise at this game's scale (rewards routinely span 15000-34000). vs melon_maxxer it did improve (32508 vs the old config's 28696); vs multi_crop roughly flat (31283 vs 31517). Self-play balanced (19767 vs 19036).
+- Notes: root cause was `optimize.py`'s promotion gate (`if best.value > 0`) trusting the search's own best-trial value -- a 6-episode average across a *mixed* 3-opponent pool (melon_maxxer + multi_crop + champion combined), not a clean candidate-vs-champion comparison. A candidate that clearly beats the two fixed benchmarks can still post a positive pooled average while being a coin flip against the champion specifically, and that's what happened here. **Fixed**: added `verify_candidate()`, a dedicated N-episode (default 10) candidate-vs-champion-only verification that runs after the search completes; promotion now requires `wins > losses` from that independent sample, not the search's internal trial value. **Reverted** `best_config.json` to the previous champion (`sell_fraction: 0.527, money_reserve: 150, hire_reserve_multiple: 5.94, max_hires_per_day: 1, animal_enabled: false, ...` -- the one from the "best_config.json verification" entry below) since the promoted config wouldn't have cleared the new bar. The logic improvements from the same round (workload-hiring, diversification-aware planting, opponent-aware selling) are real and stay in `robust_agent.py` -- only the *specific threshold values* the flawed promotion picked got reverted.
+
+## 2026-08-20 — robust_agent: three structural improvements (workload-based hiring, diversification-aware planting, opponent-aware selling)
+- Command: ad hoc Python, `make_agent(best_config)` (old tuned thresholds, new logic) vs `melon_maxxer`/`multi_crop`, 3 trials each alternating seats; plus self-play sanity check
+- Result: vs melon_maxxer avg 28696 vs 5467 (was 27890 vs 5517 with the old logic, same thresholds). vs multi_crop avg 31517 vs 7976 (was 27828 vs 7195). Self-play 20522 vs 21090 -- balanced, no runaway/pathological behavior from the new opponent-awareness logic. No stderr output (zero swallowed exceptions) across all runs.
+- Notes: three logic changes, isolated by holding `best_config.json`'s thresholds fixed so only the decision logic changed: (1) hiring now requires backlog (pending harvest/water/feed/weeds/fertilize/empty-tile tasks) to exceed `hire_backlog_ratio` per current unit, not just spare money -- stops hiring hands with nothing to do; (2) planting now scores crops with a diversification discount (`_diversified_crop_score`) based on how many tiles already grow that crop, tracked live within the turn as units commit to plantings, so multiple units in one turn spread across crops instead of piling into whichever one currently scores highest; (3) `_market_orders` now takes the opponent's public tiles, estimates their incoming supply per product (ripe now, or one-time crops maturing within `opponent_lookahead_days`), and lowers our own sell threshold for that product to sell ahead of their price-crashing dump. New config keys (`hire_backlog_ratio`, `diversification_weight`, `opponent_awareness_enabled`, `opponent_incoming_threshold`, `opponent_race_discount`, `opponent_lookahead_days`) aren't yet covered by `optimize.py`'s search space -- worth adding before the next search round.
+
+## 2026-08-20 — best_config.json: controlled ablation on animal_enabled
+- Command: ad hoc Python, `best_config` (animal_enabled=False) vs `best_config` with `animal_enabled` forced True, all other tuned params held fixed, 6 episodes alternating seats
+- Result: animals-off won 4/6, but average margin was only ~298 -- close to a coin flip at this game's reward scale (games routinely span 15000-28000).
+- Notes: isolates the `animal_enabled` choice from everything else the search changed. Conclusion revised from the previous entry: turning animals off is a small, marginal edge at best in this ablation, not the main driver of the ~15282 average margin `best_config` had over `DEFAULT_CONFIG`. That win is mostly coming from the other tuned parameters (money_reserve down from 400 to 150, hire_reserve_multiple up from 3.0 to 5.9, land_utilization_threshold up from 0.7 to 0.87, etc.), not from skipping animals specifically.
+
+## 2026-08-20 — best_config.json verification: tuned vs hand-tuned default
+- Command: ad hoc Python, `make_agent(best_config)` vs `make_agent(DEFAULT_CONFIG)`, 6 episodes alternating seats; plus vs `melon_maxxer` and `multi_crop`
+- Result: tuned config **won 6/6** vs DEFAULT_CONFIG, average margin ~15282 (range 3593-27728 for the default's score across trials, tuned consistently 20775-27728). vs melon_maxxer 27890 vs 5517; vs multi_crop 27828 vs 7195 -- both higher than DEFAULT_CONFIG's numbers against the same opponents in earlier entries.
+- Notes: confirms the Optuna search's winning config (`src/best_config.json`) is a real, decisive improvement over the hand-picked defaults, not sampling noise. Most surprising finding: the search turned `animal_enabled` **off** and cut `max_hires_per_day` from 4 to 1 -- i.e. at least in this opponent pool, skipping animal infrastructure and over-hiring entirely and just running a lean crop operation with 1 extra hand outperforms the fuller economic simulation we hand-designed. Worth a closer look before trusting this generalizes (e.g. against a different opponent style, or once land/animals matter more at higher skill).
+
+## 2026-08-20 — robust_agent: post-refactor / post-doc-fix sanity check
+- Command: `python src/run_match.py robust_agent:robust_agent melon_maxxer:melon_maxxer`
+- Result: robust_agent 23748 vs melon_maxxer 5694 — DONE/DONE
+- Notes: confirms the `farm_utils.py` extraction and the doc path fixes didn't change agent behavior.
+
+## 2026-08-20 — farm_utils.py extraction: before/after equivalence
+- Command: ad hoc Python, `multi_crop`/`robust_agent` each vs `random` and vs `melon_maxxer`
+- Result: robust_agent vs random 24054 vs 0; vs melon_maxxer 20416 vs 5784. multi_crop vs random 8258 vs 0; vs melon_maxxer 7795 vs 5957. All DONE/DONE.
+- Notes: matches the pre-refactor numbers below within normal run-to-run variance (episodes aren't seeded) — moving `step_toward`/`closest`/`act_or_move`/`shed_tiles` into `src/farm_utils.py` was behavior-preserving.
+
+## 2026-08-20 — robust_agent: edge cases (pass opponent, self-play)
+- Command: ad hoc Python, `robust_agent` vs `"pass"` and vs itself
+- Result: vs pass 25601 vs 3000; self-play 14836 vs 14466. Both DONE/DONE, no stderr output.
+- Notes: no crash against a fully passive opponent or in a mirror match; self-play is close to even, as expected for two copies of the same policy.
+
+## 2026-08-20 — robust_agent v1 (fixed): head-to-head vs melon_maxxer, 5 trials
+- Command: ad hoc Python loop, 5 episodes of `robust_agent` vs `melon_maxxer`
+- Result: 20067, 21422, 20618, 20440, 16046 vs a consistent ~5660-5713. **5/5 wins**, zero stderr output across all trials (zero swallowed exceptions).
+- Notes: consistent win margin (~3-4x) despite reward variance run to run.
+
+## 2026-08-20 — robust_agent v1 (fixed): full benchmark suite
+- Command: ad hoc Python, `robust_agent` vs `random` / `melon_maxxer` / `multi_crop`
+- Result: vs random 25631 vs 0; vs melon_maxxer 17593 vs 5727; vs multi_crop 17069 vs 8235.
+- Notes: decisive wins across all three benchmark opponents after the day-1 cash-crash fix below.
+
+## 2026-08-20 — robust_agent v1: bug fix (animal/fertilizer over-buying, build-before-plant ordering)
+- Command: ad hoc Python, `robust_agent` vs `random`, plus a turn-by-turn trace of the first ~15 turns
+- Result before fix: reward 214 vs random. Trace showed 3x `BUY_ANIMAL GOOSE` for a single coop slot (~$600 wasted) and the farmer's first action was `BUILD_COOP` instead of planting; money crashed 3000→359 within day 0 and hiring never resumed on later days.
+- Result after fix: reward 20007 vs random, `day`-sampled trace shows 4 hands sustained through day 16, money recovering to 20k+ by day 29.
+- Notes: root causes were (1) animal/fertilizer buy conditions checked "is there an empty slot" instead of "do we already have stock sitting unplaced," causing repeated redundant purchases, and (2) `BUILD_COOP`/`BUILD_PASTURE` was higher task priority than `PLANT`, delaying all crop income. Fixed in `src/robust_agent.py`: stock-aware buy checks (shed + carried inventory), reordered priorities (plant before building), added a `startup_days` gate before land/animal/structure spending.
+
+## 2026-08-20 — multi_crop: head-to-head vs melon_maxxer, seat-swap check
+- Command: ad hoc Python, `multi_crop` vs `melon_maxxer` in both seat orders
+- Result: as P0, 6006 vs 5957 (narrow win). As P1, 7832 vs 5957 (clear win). melon_maxxer scored ~5957-5960 consistently regardless of seat/opponent.
+- Notes: diversification gives a real edge vs melon_maxxer but it's not dominant — still single-farmer, single-quadrant, no fertilizing at this point.
+
+## 2026-08-20 — multi_crop v1: bug fix (harvest-timing logic inverted)
+- Command: ad hoc Python, `multi_crop` vs `random`, plus a turn-by-turn trace of the first 20 turns
+- Result before fix: reward 2600 vs random. Trace showed the farmer spamming an invalid `HARVEST` on immature wheat every turn instead of watering it; money slowly bled from 3000 to ~2600 with an empty shed the whole game.
+- Result after fix: reward 8618 vs random; day-sampled trace shows shed accumulating WHEAT normally (10 by day 22, 18 by day 29) and money climbing to 7816.
+- Notes: root cause was `if not CROPS[crop]["ongoing"] or (age >= max_day):` — the `or` made the condition true for every one-time crop regardless of age. Fixed in `src/multi_crop.py` by properly branching on `ongoing` instead of using `or`.
+
+## 2026-08-20 — quick_start_agent / melon_maxxer: initial local smoke test
+- Command: ad hoc Python, `quick_start_agent` and `melon_maxxer` each vs `random`; then head-to-head against each other in both seat orders
+- Result: quick_start_agent vs random 3394 vs 0. melon_maxxer vs random 5957 vs 0. Head-to-head: melon_maxxer beat quick_start_agent 5957 vs 3380/3394 in both seat orders.
+- Notes: first confirmation the local dev loop (`kaggle-environments` installed in `.venv`, both starter agents importable) works end to end; established melon_maxxer as the stronger baseline to build on.
+
+## 2026-08-20 — optimize.py: smoke test (harness validation, not a real search)
+- Command: `python src/optimize.py --n-trials 4 --n-jobs 1 --opponents melon_maxxer`
+- Result: 4 complete trials, 0 pruned (too few trials for MedianPruner's 5-trial startup to activate). Best margin **22725.5**.
+- Notes: this was a first run (champion going in was DEFAULT_CONFIG) with a deliberately tiny trial count and single-opponent pool, purely to confirm the Optuna harness (study creation, sampling, evaluation, champion promotion, auto-logging) works end to end. `best_config.json` got written from just 4 noisy trials -- not meaningful as a real champion, superseded by the next entry.
+
+## 2026-08-20 — optimize.py: Optuna search over robust_agent config
+- Command: `python src/optimize.py --n-trials 150 --n-jobs 10 --opponents melon_maxxer,multi_crop,champion`
+- Result: 117 complete trials, 33 pruned. Best margin (candidate - opponent, averaged over 2 episodes x 3 opponents): **21784.8**. Best params: `{"sell_fraction": 0.5268146257913258, "max_sell_chunk": 16, "money_reserve": 150, "seed_money_floor": 29, "hire_reserve_multiple": 5.936052940507935, "max_hires_per_day": 1, "land_utilization_threshold": 0.8728656897907402, "animal_enabled": false, "max_structures": 5, "startup_days": 4, "structure_money_threshold": 450, "buy_fertilizer": false}`.
+- Notes: opponent pool was ['melon_maxxer', 'multi_crop', 'champion'], champion going in was `DEFAULT_CONFIG (first run)`. Promoted to new champion (best_config.json updated).
+
+## 2026-08-20 — optimize.py: Optuna search over robust_agent config
+- Command: `python src/optimize.py --n-trials 200 --n-jobs 10 --opponents melon_maxxer,multi_crop,champion`
+- Result: 161 complete trials, 39 pruned. Best margin (candidate - opponent, averaged over 2 episodes x 3 opponents): **18842.8**. Best params: `{"sell_fraction": 0.5318110635761615, "max_sell_chunk": 16, "money_reserve": 900, "seed_money_floor": 11, "hire_reserve_multiple": 2.0011699764866657, "max_hires_per_day": 6, "land_utilization_threshold": 0.6518059024138424, "animal_enabled": true, "max_structures": 6, "startup_days": 12, "structure_money_threshold": 1250, "buy_fertilizer": false, "hire_backlog_ratio": 0.6923467131104678, "diversification_weight": 0.22822797099662806, "opponent_awareness_enabled": true, "opponent_incoming_threshold": 3, "opponent_race_discount": 0.553885789037222, "opponent_lookahead_days": 4}`.
+- Notes: opponent pool was ['melon_maxxer', 'multi_crop', 'champion'], champion going in was `best_config.json`. Promoted to new champion (best_config.json updated).

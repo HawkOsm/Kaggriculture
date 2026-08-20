@@ -1,0 +1,3 @@
+kaggle-environments>=1.32.2
+kaggle
+optuna

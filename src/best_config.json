@@ -1,0 +1,21 @@
+{
+  "sell_fraction": 0.5268146257913258,
+  "max_sell_chunk": 16,
+  "money_reserve": 150,
+  "seed_money_floor": 29,
+  "hire_reserve_multiple": 5.936052940507935,
+  "max_hires_per_day": 1,
+  "land_utilization_threshold": 0.8728656897907402,
+  "animal_enabled": false,
+  "max_structures": 5,
+  "startup_days": 4,
+  "structure_money_threshold": 450,
+  "buy_fertilizer": false,
+  "crops": [
+    "WHEAT",
+    "CARROT",
+    "TOMATO",
+    "STRAWBERRY",
+    "MELON"
+  ]
+}

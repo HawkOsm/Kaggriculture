@@ -1,0 +1,265 @@
+"""Local Optuna search over robust_agent.DEFAULT_CONFIG.
+
+Frames tuning as beating a reigning champion instead of chasing a raw reward
+number: each trial's candidate config plays a fixed opponent pool --
+melon_maxxer, multi_crop, and the current champion config (loaded from
+best_config.json, or DEFAULT_CONFIG on the very first run) -- and is scored
+by average reward *margin* (candidate - opponent), not raw reward. That's
+what "steady progression" means here: every run of this script tries to beat
+whatever the previous run's winner was, so best_config.json only moves
+forward.
+
+Because episodes aren't seeded, a single episode is noisy -- each trial
+plays --episodes-per-opponent episodes against every opponent (both seat
+orders by default) and reports the running average after each one, so
+Optuna's pruner (MedianPruner) can kill a trial that's clearly worse than
+the pack after just 1-2 episodes instead of burning the full budget on it.
+
+Usage:
+    python optimize.py --n-trials 200 --n-jobs 8
+    python optimize.py --n-trials 50 --n-jobs 1 --opponents melon_maxxer,random
+
+Resumable: reruns with the same --study-name/--storage continue the same
+Optuna study instead of starting over.
+"""
+
+import argparse
+import datetime
+import json
+import multiprocessing
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import optuna
+
+from kaggle_environments import make as make_env
+
+from robust_agent import DEFAULT_CONFIG, make_agent
+from melon_maxxer import melon_maxxer
+from multi_crop import multi_crop
+
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent
+BEST_CONFIG_PATH = HERE / "best_config.json"
+LOG_PATH = REPO_ROOT / "docs" / "tests" / "LOG.md"
+DEFAULT_STORAGE = f"sqlite:///{HERE / 'optuna_study.db'}"
+DEFAULT_STUDY_NAME = "robust_agent_config"
+
+BUILTIN_AGENTS = {"random": "random", "pass": "pass", "starter": "starter",
+                  "melon_maxxer": melon_maxxer, "multi_crop": multi_crop}
+
+
+def load_champion_config():
+    if BEST_CONFIG_PATH.exists():
+        return json.loads(BEST_CONFIG_PATH.read_text())
+    return dict(DEFAULT_CONFIG)
+
+
+def sample_config(trial):
+    return {
+        "sell_fraction": trial.suggest_float("sell_fraction", 0.5, 0.95),
+        "max_sell_chunk": trial.suggest_int("max_sell_chunk", 3, 20),
+        "money_reserve": trial.suggest_int("money_reserve", 100, 1200, step=50),
+        "seed_money_floor": trial.suggest_int("seed_money_floor", 5, 50),
+        "hire_reserve_multiple": trial.suggest_float("hire_reserve_multiple", 0.5, 8.0),
+        "max_hires_per_day": trial.suggest_int("max_hires_per_day", 0, 6),
+        "land_utilization_threshold": trial.suggest_float("land_utilization_threshold", 0.4, 0.95),
+        "animal_enabled": trial.suggest_categorical("animal_enabled", [True, False]),
+        "max_structures": trial.suggest_int("max_structures", 0, 8),
+        "startup_days": trial.suggest_int("startup_days", 0, 12),
+        "structure_money_threshold": trial.suggest_int("structure_money_threshold", 0, 1500, step=50),
+        "buy_fertilizer": trial.suggest_categorical("buy_fertilizer", [True, False]),
+        "hire_backlog_ratio": trial.suggest_float("hire_backlog_ratio", 0.3, 4.0),
+        "diversification_weight": trial.suggest_float("diversification_weight", 0.0, 1.0),
+        "opponent_awareness_enabled": trial.suggest_categorical("opponent_awareness_enabled", [True, False]),
+        "opponent_incoming_threshold": trial.suggest_int("opponent_incoming_threshold", 1, 10),
+        "opponent_race_discount": trial.suggest_float("opponent_race_discount", 0.3, 1.0),
+        "opponent_lookahead_days": trial.suggest_int("opponent_lookahead_days", 0, 5),
+    }
+
+
+def _resolve_agent(name):
+    if name in BUILTIN_AGENTS:
+        return BUILTIN_AGENTS[name]
+    raise ValueError(f"unknown opponent {name!r}; choose from {sorted(BUILTIN_AGENTS)}")
+
+
+def play_episode(agent_a, agent_b, episode_steps=720):
+    env = make_env("kaggriculture", configuration={"episodeSteps": episode_steps}, debug=True)
+    env.run([agent_a, agent_b])
+    final = env.steps[-1]
+    return final[0].reward, final[1].reward
+
+
+def evaluate_config(config, opponent_names, episodes_per_opponent, champion_config, trial=None):
+    """Average reward margin (candidate - opponent) across the opponent pool.
+    Reports the running average to `trial` after each episode for pruning."""
+    candidate = make_agent(config)
+    opponents = []
+    for name in opponent_names:
+        opponents.append((name, _resolve_agent(name) if name != "champion" else make_agent(champion_config)))
+
+    margins = []
+    step = 0
+    for name, opponent_agent in opponents:
+        for seat in range(episodes_per_opponent):
+            if seat % 2 == 0:
+                r_candidate, r_opponent = play_episode(candidate, opponent_agent)
+            else:
+                r_opponent, r_candidate = play_episode(opponent_agent, candidate)
+            margins.append(r_candidate - r_opponent)
+
+            if trial is not None:
+                running_avg = sum(margins) / len(margins)
+                trial.report(running_avg, step)
+                step += 1
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+
+    return sum(margins) / len(margins)
+
+
+def make_objective(opponent_names, episodes_per_opponent, champion_config):
+    def objective(trial):
+        config = sample_config(trial)
+        return evaluate_config(config, opponent_names, episodes_per_opponent, champion_config, trial=trial)
+    return objective
+
+
+def verify_candidate(candidate_config, champion_config, episodes):
+    """Dedicated candidate-vs-champion verification, independent of the
+    search's own (noisy, mixed-opponent-pool) trial value. Promotion should
+    never be decided by the same 6-episode number that picked the trial --
+    that's exactly the kind of thin sample the search's pruner is built to
+    distrust mid-search, so the final promotion gate shouldn't trust it
+    either. Returns (wins, losses, ties, avg_margin)."""
+    candidate = make_agent(candidate_config)
+    champion = make_agent(champion_config)
+    wins = losses = ties = 0
+    margins = []
+    for i in range(episodes):
+        if i % 2 == 0:
+            r_candidate, r_champion = play_episode(candidate, champion)
+        else:
+            r_champion, r_candidate = play_episode(champion, candidate)
+        margin = r_candidate - r_champion
+        margins.append(margin)
+        if margin > 0:
+            wins += 1
+        elif margin < 0:
+            losses += 1
+        else:
+            ties += 1
+    return wins, losses, ties, sum(margins) / len(margins)
+
+
+def _worker(study_name, storage, n_trials, opponent_names, episodes_per_opponent, champion_config):
+    study = optuna.load_study(study_name=study_name, storage=storage)
+    study.optimize(make_objective(opponent_names, episodes_per_opponent, champion_config), n_trials=n_trials)
+
+
+def _log_outcome(study, opponent_names, episodes_per_opponent, n_trials, n_jobs, had_champion_before,
+                  verification_episodes, wins, losses, ties, verify_margin, promoted):
+    date = datetime.date.today().isoformat()
+    best = study.best_trial
+    n_complete = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    n_pruned = len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])
+    entry = f"""## {date} — optimize.py: Optuna search over robust_agent config
+- Command: `python src/optimize.py --n-trials {n_trials} --n-jobs {n_jobs} --opponents {','.join(opponent_names)}`
+- Result: {n_complete} complete trials, {n_pruned} pruned. Search's own best trial margin (noisy, {episodes_per_opponent} episodes x {len(opponent_names)}-opponent pool): {best.value:.1f}. **Dedicated candidate-vs-champion verification ({verification_episodes} episodes): {wins}W-{losses}L-{ties}T, avg margin {verify_margin:.1f}.**
+- Notes: opponent pool was {opponent_names}, champion going in was `{'best_config.json' if had_champion_before else 'DEFAULT_CONFIG (first run)'}`. Promotion gate is the dedicated verification (wins > losses), not the search's own trial value. {"Promoted to new champion (best_config.json updated)." if promoted else "Did NOT clear the verification bar -- best_config.json left unchanged."} Best trial params: `{json.dumps(best.params)}`.
+
+"""
+    # LOG.md convention is newest-first: insert right after the header/divider
+    # instead of appending, which would silently bury new entries at the end.
+    text = LOG_PATH.read_text()
+    marker = "---\n"
+    idx = text.index(marker) + len(marker)
+    LOG_PATH.write_text(text[:idx] + "\n" + entry + text[idx:].lstrip("\n"))
+    print(f"Logged outcome to {LOG_PATH}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--n-trials", type=int, default=100, help="total trials across all workers")
+    parser.add_argument("--n-jobs", type=int, default=max(1, min(8, (os.cpu_count() or 4) - 2)))
+    parser.add_argument("--episodes-per-opponent", type=int, default=2, help="must be even for balanced seating")
+    parser.add_argument("--opponents", default="melon_maxxer,multi_crop,champion",
+                         help="comma-separated: melon_maxxer, multi_crop, random, pass, starter, champion")
+    parser.add_argument("--study-name", default=DEFAULT_STUDY_NAME)
+    parser.add_argument("--storage", default=DEFAULT_STORAGE)
+    parser.add_argument("--timeout", type=int, default=None, help="wall-clock budget in seconds, across all workers")
+    parser.add_argument("--verification-episodes", type=int, default=10,
+                         help="dedicated candidate-vs-champion episodes deciding promotion (independent of the search's own trial value)")
+    args = parser.parse_args()
+
+    opponent_names = [o.strip() for o in args.opponents.split(",") if o.strip()]
+    had_champion_before = BEST_CONFIG_PATH.exists()
+    champion_config = load_champion_config()
+
+    optuna.create_study(
+        study_name=args.study_name,
+        storage=args.storage,
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1),
+        load_if_exists=True,
+    )
+
+    n_jobs = max(1, args.n_jobs)
+    per_worker = [args.n_trials // n_jobs] * n_jobs
+    for i in range(args.n_trials % n_jobs):
+        per_worker[i] += 1
+
+    print(f"Running {args.n_trials} trials across {n_jobs} worker process(es), "
+          f"opponents={opponent_names}, episodes_per_opponent={args.episodes_per_opponent}")
+
+    if n_jobs == 1:
+        _worker(args.study_name, args.storage, args.n_trials, opponent_names, args.episodes_per_opponent, champion_config)
+    else:
+        procs = []
+        for n in per_worker:
+            if n <= 0:
+                continue
+            p = multiprocessing.Process(
+                target=_worker,
+                args=(args.study_name, args.storage, n, opponent_names, args.episodes_per_opponent, champion_config),
+            )
+            p.start()
+            procs.append(p)
+        for p in procs:
+            p.join()
+
+    study = optuna.load_study(study_name=args.study_name, storage=args.storage)
+    best = study.best_trial
+    print(f"\nSearch's own best trial margin (noisy, {args.episodes_per_opponent} episodes x {len(opponent_names)}-opponent pool): {best.value:.1f}")
+    print(f"Best params: {json.dumps(best.params, indent=2)}")
+
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(best.params)
+
+    print(f"\nRunning dedicated verification: {args.verification_episodes} episodes, candidate vs champion only...")
+    wins, losses, ties, verify_margin = verify_candidate(merged, champion_config, args.verification_episodes)
+    print(f"Verification: {wins}W-{losses}L-{ties}T, avg margin {verify_margin:.1f}")
+
+    # Promotion gate is this dedicated head-to-head, not the search's own
+    # trial value -- that value came from a 6-episode mixed-opponent-pool
+    # average (melon_maxxer + multi_crop + champion combined), which can
+    # look positive even if the candidate barely edges or loses to the
+    # champion specifically. Require strictly more wins than losses.
+    promoted = wins > losses
+    if promoted:
+        BEST_CONFIG_PATH.write_text(json.dumps(merged, indent=2))
+        print(f"New champion written to {BEST_CONFIG_PATH}")
+    else:
+        print("Candidate did not beat the champion head-to-head (wins <= losses) -- best_config.json left unchanged.")
+
+    _log_outcome(study, opponent_names, args.episodes_per_opponent, args.n_trials, n_jobs, had_champion_before,
+                 args.verification_episodes, wins, losses, ties, verify_margin, promoted)
+
+
+if __name__ == "__main__":
+    main()
