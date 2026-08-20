@@ -28,6 +28,7 @@ import datetime
 import json
 import multiprocessing
 import os
+import statistics
 import sys
 from pathlib import Path
 
@@ -46,10 +47,23 @@ REPO_ROOT = HERE.parent
 BEST_CONFIG_PATH = HERE / "best_config.json"
 LOG_PATH = REPO_ROOT / "docs" / "tests" / "LOG.md"
 DEFAULT_STORAGE = f"sqlite:///{HERE / 'optuna_study.db'}"
-DEFAULT_STUDY_NAME = "robust_agent_config"
+# Renamed when the search space changed for the scaling-strategy redesign
+# (see docs/tests/LOG.md) -- old trials used a different, now-incompatible
+# set of config keys (structure_money_threshold, no hire_money_floor, etc.),
+# so this points at a fresh study rather than silently mixing histories.
+DEFAULT_STUDY_NAME = "robust_agent_config_v2_scaling"
 
 BUILTIN_AGENTS = {"random": "random", "pass": "pass", "starter": "starter",
                   "melon_maxxer": melon_maxxer, "multi_crop": multi_crop}
+
+CROP_PROFILES = {
+    # Broad exposure to avoid single-commodity collapse.
+    "diversified": ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON"],
+    # Faster cash cycling, lower long-horizon concentration.
+    "fast_cash": ["WHEAT", "CARROT", "TOMATO"],
+    # Keep high-upside melon while preserving short-cycle income.
+    "melon_plus_short": ["WHEAT", "CARROT", "MELON"],
+}
 
 
 def load_champion_config():
@@ -60,17 +74,21 @@ def load_champion_config():
 
 def sample_config(trial):
     return {
-        "sell_fraction": trial.suggest_float("sell_fraction", 0.5, 0.95),
+        "sell_fraction": trial.suggest_float("sell_fraction", 0.4, 0.9),
         "max_sell_chunk": trial.suggest_int("max_sell_chunk", 3, 20),
-        "money_reserve": trial.suggest_int("money_reserve", 100, 1200, step=50),
+        "money_reserve": trial.suggest_int("money_reserve", 20, 500, step=20),
         "seed_money_floor": trial.suggest_int("seed_money_floor", 5, 50),
-        "hire_reserve_multiple": trial.suggest_float("hire_reserve_multiple", 0.5, 8.0),
-        "max_hires_per_day": trial.suggest_int("max_hires_per_day", 0, 6),
+        "hire_money_floor": trial.suggest_int("hire_money_floor", 0, 100, step=10),
+        "hire_reserve_multiple": trial.suggest_float("hire_reserve_multiple", 0.5, 6.0),
+        "max_hires_per_day": trial.suggest_int("max_hires_per_day", 0, 8),
         "land_utilization_threshold": trial.suggest_float("land_utilization_threshold", 0.4, 0.95),
+        "land_startup_days": trial.suggest_int("land_startup_days", 0, 10),
         "animal_enabled": trial.suggest_categorical("animal_enabled", [True, False]),
-        "max_structures": trial.suggest_int("max_structures", 0, 8),
-        "startup_days": trial.suggest_int("startup_days", 0, 12),
-        "structure_money_threshold": trial.suggest_int("structure_money_threshold", 0, 1500, step=50),
+        "enable_coop": trial.suggest_categorical("enable_coop", [True, False]),
+        "max_structures": trial.suggest_int("max_structures", 0, 18),
+        "pasture_target_ratio": trial.suggest_float("pasture_target_ratio", 0.0, 1.2),
+        "animal_reserve_multiple": trial.suggest_float("animal_reserve_multiple", 1.0, 5.0),
+        "startup_days": trial.suggest_int("startup_days", 0, 8),
         "buy_fertilizer": trial.suggest_categorical("buy_fertilizer", [True, False]),
         "hire_backlog_ratio": trial.suggest_float("hire_backlog_ratio", 0.3, 4.0),
         "diversification_weight": trial.suggest_float("diversification_weight", 0.0, 1.0),
@@ -78,7 +96,22 @@ def sample_config(trial):
         "opponent_incoming_threshold": trial.suggest_int("opponent_incoming_threshold", 1, 10),
         "opponent_race_discount": trial.suggest_float("opponent_race_discount", 0.3, 1.0),
         "opponent_lookahead_days": trial.suggest_int("opponent_lookahead_days", 0, 5),
+        "crop_profile": trial.suggest_categorical("crop_profile", sorted(CROP_PROFILES.keys())),
     }
+
+
+def _resolve_search_config(params):
+    """Convert Optuna trial params into a robust_agent-compatible config.
+
+    Keeps search-only knobs (like crop_profile) out of runtime config while
+    allowing older studies (without crop_profile) to remain readable.
+    """
+    cfg = dict(params)
+    profile = cfg.pop("crop_profile", "diversified")
+    cfg["crops"] = list(CROP_PROFILES.get(profile, CROP_PROFILES["diversified"]))
+    if not cfg.get("animal_enabled", True):
+        cfg["max_structures"] = 0
+    return cfg
 
 
 def _resolve_agent(name):
@@ -94,7 +127,16 @@ def play_episode(agent_a, agent_b, episode_steps=720):
     return final[0].reward, final[1].reward
 
 
-def evaluate_config(config, opponent_names, episodes_per_opponent, champion_config, trial=None):
+def _risk_adjusted_score(margins, risk_aversion=0.2, tail_quantile=0.25, tail_weight=0.3):
+    mean_margin = statistics.fmean(margins)
+    std_margin = statistics.pstdev(margins) if len(margins) > 1 else 0.0
+    tail_n = max(1, int(len(margins) * tail_quantile))
+    tail_avg = statistics.fmean(sorted(margins)[:tail_n])
+    return mean_margin - risk_aversion * std_margin + tail_weight * tail_avg
+
+
+def evaluate_config(config, opponent_names, episodes_per_opponent, champion_config, trial=None,
+                    risk_aversion=0.2, tail_quantile=0.25, tail_weight=0.3):
     """Average reward margin (candidate - opponent) across the opponent pool.
     Reports the running average to `trial` after each episode for pruning."""
     candidate = make_agent(config)
@@ -113,19 +155,40 @@ def evaluate_config(config, opponent_names, episodes_per_opponent, champion_conf
             margins.append(r_candidate - r_opponent)
 
             if trial is not None:
-                running_avg = sum(margins) / len(margins)
-                trial.report(running_avg, step)
+                running_score = _risk_adjusted_score(
+                    margins,
+                    risk_aversion=risk_aversion,
+                    tail_quantile=tail_quantile,
+                    tail_weight=tail_weight,
+                )
+                trial.report(running_score, step)
                 step += 1
                 if trial.should_prune():
                     raise optuna.TrialPruned()
 
-    return sum(margins) / len(margins)
+    return _risk_adjusted_score(
+        margins,
+        risk_aversion=risk_aversion,
+        tail_quantile=tail_quantile,
+        tail_weight=tail_weight,
+    )
 
 
-def make_objective(opponent_names, episodes_per_opponent, champion_config):
+def make_objective(opponent_names, episodes_per_opponent, champion_config,
+                   risk_aversion=0.2, tail_quantile=0.25, tail_weight=0.3):
     def objective(trial):
-        config = sample_config(trial)
-        return evaluate_config(config, opponent_names, episodes_per_opponent, champion_config, trial=trial)
+        sampled = sample_config(trial)
+        config = _resolve_search_config(sampled)
+        return evaluate_config(
+            config,
+            opponent_names,
+            episodes_per_opponent,
+            champion_config,
+            trial=trial,
+            risk_aversion=risk_aversion,
+            tail_quantile=tail_quantile,
+            tail_weight=tail_weight,
+        )
     return objective
 
 
@@ -156,9 +219,20 @@ def verify_candidate(candidate_config, champion_config, episodes):
     return wins, losses, ties, sum(margins) / len(margins)
 
 
-def _worker(study_name, storage, n_trials, opponent_names, episodes_per_opponent, champion_config):
+def _worker(study_name, storage, n_trials, opponent_names, episodes_per_opponent, champion_config,
+            risk_aversion, tail_quantile, tail_weight):
     study = optuna.load_study(study_name=study_name, storage=storage)
-    study.optimize(make_objective(opponent_names, episodes_per_opponent, champion_config), n_trials=n_trials)
+    study.optimize(
+        make_objective(
+            opponent_names,
+            episodes_per_opponent,
+            champion_config,
+            risk_aversion=risk_aversion,
+            tail_quantile=tail_quantile,
+            tail_weight=tail_weight,
+        ),
+        n_trials=n_trials,
+    )
 
 
 def _log_outcome(study, opponent_names, episodes_per_opponent, n_trials, n_jobs, had_champion_before,
@@ -194,6 +268,12 @@ def main():
     parser.add_argument("--timeout", type=int, default=None, help="wall-clock budget in seconds, across all workers")
     parser.add_argument("--verification-episodes", type=int, default=10,
                          help="dedicated candidate-vs-champion episodes deciding promotion (independent of the search's own trial value)")
+    parser.add_argument("--risk-aversion", type=float, default=0.2,
+                        help="penalty weight on per-episode margin variance (higher = safer configs)")
+    parser.add_argument("--tail-quantile", type=float, default=0.25,
+                        help="fraction of worst margins treated as downside tail")
+    parser.add_argument("--tail-weight", type=float, default=0.3,
+                        help="weight on worst-tail average margin (higher = more crash-averse)")
     args = parser.parse_args()
 
     opponent_names = [o.strip() for o in args.opponents.split(",") if o.strip()]
@@ -218,7 +298,17 @@ def main():
           f"opponents={opponent_names}, episodes_per_opponent={args.episodes_per_opponent}")
 
     if n_jobs == 1:
-        _worker(args.study_name, args.storage, args.n_trials, opponent_names, args.episodes_per_opponent, champion_config)
+        _worker(
+            args.study_name,
+            args.storage,
+            args.n_trials,
+            opponent_names,
+            args.episodes_per_opponent,
+            champion_config,
+            args.risk_aversion,
+            args.tail_quantile,
+            args.tail_weight,
+        )
     else:
         procs = []
         for n in per_worker:
@@ -226,7 +316,17 @@ def main():
                 continue
             p = multiprocessing.Process(
                 target=_worker,
-                args=(args.study_name, args.storage, n, opponent_names, args.episodes_per_opponent, champion_config),
+                args=(
+                    args.study_name,
+                    args.storage,
+                    n,
+                    opponent_names,
+                    args.episodes_per_opponent,
+                    champion_config,
+                    args.risk_aversion,
+                    args.tail_quantile,
+                    args.tail_weight,
+                ),
             )
             p.start()
             procs.append(p)
@@ -239,7 +339,7 @@ def main():
     print(f"Best params: {json.dumps(best.params, indent=2)}")
 
     merged = dict(DEFAULT_CONFIG)
-    merged.update(best.params)
+    merged.update(_resolve_search_config(best.params))
 
     print(f"\nRunning dedicated verification: {args.verification_episodes} episodes, candidate vs champion only...")
     wins, losses, ties, verify_margin = verify_candidate(merged, champion_config, args.verification_episodes)

@@ -16,58 +16,126 @@ optimize.py) can tune them against the two things we can actually measure
 offline: reward vs. a benchmark agent, and reward vs. self (self-play).
 """
 
+import math
 import sys
 
 from kaggle_environments.envs.kaggriculture.kaggriculture import (
     ANIMALS,
     CROPS,
+    LAND_PRICES,
     MARKET_PARAMS,
 )
 
 from farm_utils import act_or_move, closest, shed_tiles
 
+# Config below encodes a scaling-first strategy reverse-engineered from the
+# #1 leaderboard player's public replays (see docs/tests/LOG.md): hire and
+# expand land aggressively from turn one, run a large pasture (COW/SHEEP)
+# operation, and tolerate near-zero cash early on the bet that the resulting
+# labor/land capacity compounds well before the 30-day season ends. Our
+# previous Optuna-searched config converged on the opposite (max_hires=1,
+# animals off) because it was only ever tested against passive opponents
+# that never punish staying small -- it lost a real ladder match to an
+# opponent that scaled hands 1->9 and land 1->3 quadrants while we sat on a
+# single unexpanded quadrant the whole game.
 DEFAULT_CONFIG = {
     # Only sell a product once its price is at/above this fraction of base --
     # avoid fire-selling into a glut (ours or the opponent's).
-    "sell_fraction": 0.75,
+    "sell_fraction": 0.6,
     # Cap per-crop sell size per turn so one order doesn't crash its own
     # price mid-sale (selling is one-unit-at-a-time and price moves as it
     # goes).
     "max_sell_chunk": 10,
-    # Never spend below this bank balance, except cheap seed top-ups.
-    "money_reserve": 400,
+    # Never spend below this bank balance, except cheap seed top-ups. Kept
+    # low deliberately: the reigning #1 player runs as low as $73-760 for
+    # the first ~10 days, pouring nearly everything into hiring/land/animals
+    # while it still compounds for the rest of the season. Not near-zero,
+    # though -- a $3000 start that's fully drained on day 0 (before any
+    # crop has had time to mature) has no buffer to survive the multi-day
+    # gap before first income, which is a real failure mode we hit tuning
+    # this (see docs/tests/LOG.md).
+    "money_reserve": 100,
     # Seed costs are small; allow buying seeds even close to the reserve.
     "seed_money_floor": 20,
-    # Only hire an additional hand if money left after reserve covers this
-    # many multiples of the (fibonacci-growing) hire cost -- keeps hiring
-    # from starving the reserve on a bad day.
-    "hire_reserve_multiple": 3.0,
-    "max_hires_per_day": 4,
-    # Buy the next land quadrant once this fraction of currently-unlocked
-    # tiles are occupied by something productive.
-    "land_utilization_threshold": 0.7,
+    # Hire cost is a fibonacci curve that resets to $1 every day -- even the
+    # 12th hire of a day only costs $144. Gating it behind the same reserve
+    # used for $400-4000 land/animal purchases created a poverty trap: once
+    # income dipped below money_reserve for any reason, hiring (the thing
+    # that would fix low income) got blocked too, for potentially days at a
+    # stretch. Hiring gets its own much smaller floor instead, matching how
+    # the #1 player keeps hiring 9-12 hands/day while running as low as $73.
+    "hire_money_floor": 10,
+    "hire_reserve_multiple": 2.0,
+    # #1 player sustains 8-12 hired hands/day almost the whole game, but
+    # that assumes routing sophisticated enough to keep that many hands
+    # productively busy across a wide board. Our simple greedy-nearest-tile
+    # dispatcher isn't that: local testing at max_hires_per_day=12 left
+    # ~half of all unlocked land permanently empty (units spend most turns
+    # walking, not working) and lost head-to-head to a modest 1-hand
+    # baseline. 5 is a middle ground that empirically holds its own; this
+    # (like most of the knobs below) is exactly what optimize.py exists to
+    # tune properly instead of hand-guessing further -- see docs/tests/LOG.md.
+    "max_hires_per_day": 5,
     "animal_enabled": True,
-    "max_structures": 4,
-    # Don't touch land/animal/structure/fertilizer spending before this many
-    # in-game days have passed -- let the first crop cycle establish income
-    # before committing cash to things that take even longer to pay back.
-    "startup_days": 4,
-    # Extra slack above reserve required before spending a turn on
-    # BUILD_COOP/BUILD_PASTURE instead of another crop tile.
-    "structure_money_threshold": 500,
+    # Coops/GOOSE are deliberately unused -- the #1 player's replays show a
+    # large pasture (COW/SHEEP) operation and literally zero coops across
+    # two independent games. Kept as a switch in case future data disagrees.
+    "enable_coop": False,
+    # Ceiling on total pasture+coop tiles; #1 player runs 14-18 pastures.
+    "max_structures": 16,
+    # Target pasture count as a multiple of current unit count (farmer +
+    # hands), capped at max_structures -- builds out pasture capacity
+    # roughly in step with labor instead of all at once or only as leftover
+    # land. BUILD_PASTURE itself costs nothing (only the animal does), so
+    # there's no cash reason to delay it.
+    "pasture_target_ratio": 0.3,
+    # Extra reserve multiple required specifically before BUY_ANIMAL for a
+    # pasture ($400-500) -- much pricier than a hire, so it needs a
+    # stronger brake than hire_reserve_multiple or it drains day-0 cash
+    # before hiring/land get a turn at it.
+    "animal_reserve_multiple": 2.5,
+    "startup_days": 2,
+    # Land is different: delay it a few days so hiring/seed spending on day
+    # 0 doesn't compete with it for the same thin starting cash pile. The
+    # #1 player's own land timing (NE ~day 5, SW ~day 10) is consistent
+    # with "buy it once affordable after a few days of income," not day 0.
+    "land_startup_days": 4,
+    # Moderate, not the old 0.87 -- that value created a trap when labor
+    # was hard-capped at 1 hand (occupancy could never rise to meet it).
+    # At realistic hand counts, 0.5 is enough signal that the current
+    # footprint is actually being worked before unlocking more of a board
+    # that costs real travel time to reach.
+    "land_utilization_threshold": 0.75,
     # Proactively buying fertilizer is usually not worth it -- collecting it
     # free from animals is enough once any are running. Off by default.
     "buy_fertilizer": False,
     # Which crops we're willing to grow at all; scoring picks among these.
     "crops": list(CROPS.keys()),
     # Hire only if pending work (harvest/water/feed/weeds/fertilize/empty
-    # tiles) exceeds this many tasks per current unit -- stops hiring hands
-    # that would just stand around with nothing to do.
-    "hire_backlog_ratio": 1.2,
+    # tiles) exceeds this many tasks per current unit. This is what actually
+    # produces the observed hiring ramp (5 -> 9 -> 11 -> 12 hands over the
+    # first ~8-10 days) without hardcoding it: on day 0 there's a full
+    # unopened quadrant (25 tiles) of backlog to justify hiring toward
+    # ~25/ratio hands, and backlog rises again each time BUY_LAND unlocks a
+    # fresh quadrant, justifying hiring further. Raised from the old
+    # config's 1.2 (which was tuned against passive opponents and produced
+    # a 1-hand agent) but still well below a value that would recreate that
+    # trap.
+    "hire_backlog_ratio": 1.5,
     # Score penalty per tile already growing a given crop, so units planting
     # in the same turn spread across crops instead of piling into whichever
     # one currently scores highest (self-inflicted price crash risk).
     "diversification_weight": 0.15,
+    # Total in-game days (720 turns / 24 turns-per-day). Used to stop
+    # planting crops whose harvest cycle wouldn't finish before season end --
+    # the #1 player visibly winds crop mix back down to fast-cycle WHEAT
+    # only in the final ~5 days rather than planting things that won't mature.
+    "season_days": 30,
+    # In the final `wind_down_days` days, stop hiring/land/animal spending
+    # and sell shed inventory regardless of price -- reward is money at
+    # game end, so anything still sitting in the shed or any hand hired too
+    # late to earn back its cost is pure waste.
+    "wind_down_days": 3,
     # If the opponent's public tiles show a crop about to ripen in bulk,
     # sell ours first -- their harvest dump will crash the price shortly
     # after, so getting ahead of it captures the higher price.
@@ -149,6 +217,8 @@ def _scan_farm(farm, board_size, day):
         "occupied": 0,
         "unlocked": 0,
         "crop_counts": {},
+        "coop_count": 0,
+        "pasture_count": 0,
     }
     tiles = farm["tiles"]
     for y in range(board_size):
@@ -176,6 +246,7 @@ def _scan_farm(farm, board_size, day):
                 if tile.get("fertilized_until_day", -1) < day:
                     info["fertilize"].append((x, y))
             elif kind in ("COOP", "PASTURE"):
+                info["coop_count" if kind == "COOP" else "pasture_count"] += 1
                 if "animal" not in tile:
                     info["empty_coop" if kind == "COOP" else "empty_pasture"].append((x, y))
                 else:
@@ -210,9 +281,23 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
 
     crop_pool = [c for c in config["crops"] if seeds.get(c, 0) > 0]
     crop_counts = dict(info.get("crop_counts", {}))
+    # Don't plant anything whose harvest cycle wouldn't finish before season
+    # end -- a tile with a crop that can't mature in time is wasted for the
+    # rest of the game.
+    season_ok = {c: day + _crop_cycle_days(c) <= config["season_days"] for c in config["crops"]}
 
     def inv_of(idx):
         return inventories[idx] if idx < len(inventories) else {}
+
+    # Target structure count scales with current labor so pasture capacity
+    # builds out roughly in step with hands instead of all at once or only
+    # once crop land runs out. Building itself is free (only the animal
+    # costs money), so there's no cash reason to delay it.
+    structures_committed = info["pasture_count"] + info["coop_count"]
+    if config["season_days"] - day <= config["wind_down_days"]:
+        target_structures = 0  # no time left for a new pasture to pay back
+    else:
+        target_structures = min(config["max_structures"], math.ceil(len(units) * config["pasture_target_ratio"]))
 
     farmer_action = ["PASS"]
     hands_actions = []
@@ -256,7 +341,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
         ):
             target = closest(pos, shed_spots)
             action = act_or_move(pos, target, ["PICKUP", "FERTILIZER", min(shed["FERTILIZER"], 10)])
-        elif config["animal_enabled"] and inv.get("GOOSE", 0) > 0 and info["empty_coop"]:
+        elif config["enable_coop"] and inv.get("GOOSE", 0) > 0 and info["empty_coop"]:
             target = closest(pos, info["empty_coop"])
             action = act_or_move(pos, target, ["PLACE", "GOOSE"])
             info["empty_coop"].remove(target)
@@ -265,7 +350,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
             target = closest(pos, info["empty_pasture"])
             action = act_or_move(pos, target, ["PLACE", animal])
             info["empty_pasture"].remove(target)
-        elif config["animal_enabled"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
+        elif config["enable_coop"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
             target = closest(pos, shed_spots)
             action = act_or_move(pos, target, ["PICKUP", "GOOSE", 1])
         elif (
@@ -284,12 +369,37 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
             target = closest(pos, info["weeds"])
             action = act_or_move(pos, target, ["DIG"])
             info["weeds"].remove(target)
-        elif info["empty"] and crop_pool:
-            # Plant before building animal infrastructure: crop income has to
-            # exist before it's worth spending turns (and cash) on animals.
+        elif (
+            config["animal_enabled"]
+            and info["empty"]
+            and structures_committed < target_structures
+        ):
+            # Build pasture (or coop, if enabled) capacity in step with
+            # current labor. Ranked above planting: BUILD_PASTURE is free,
+            # so there's no cash trade-off, only a tile-allocation one, and
+            # the #1 player builds pastures on day 0 alongside its first
+            # crops rather than treating them as leftover-slack spending.
+            target = closest(pos, info["empty"])
+            if config["enable_coop"] and info["coop_count"] <= info["pasture_count"]:
+                build = "BUILD_COOP"
+            else:
+                build = "BUILD_PASTURE"
+            action = act_or_move(pos, target, [build])
+            info["empty"].remove(target)
+            # Count this tile toward the target immediately (not only once
+            # actually built) -- otherwise every unit still mid-walk this
+            # turn would see the same unmet target and all pile onto
+            # BUILD_PASTURE, overshooting it in a single turn.
+            structures_committed += 1
+            if pos == target:
+                if build == "BUILD_COOP":
+                    info["coop_count"] += 1
+                else:
+                    info["pasture_count"] += 1
+        elif info["empty"] and (viable_crops := [c for c in crop_pool if season_ok.get(c, True)]):
             target = closest(pos, info["empty"])
             best_crop = max(
-                crop_pool,
+                viable_crops,
                 key=lambda c: _diversified_crop_score(
                     c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
                 ),
@@ -301,20 +411,6 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
                 if seeds[best_crop] <= 0:
                     crop_pool = [c for c in crop_pool if c != best_crop]
                 crop_counts[best_crop] = crop_counts.get(best_crop, 0) + 1
-        elif (
-            config["animal_enabled"]
-            and day >= config["startup_days"]
-            and farm["money"] - config["money_reserve"] >= config["structure_money_threshold"]
-            and info["empty"]
-            and (len(info["empty_coop"]) + len(info["empty_pasture"])) < config["max_structures"]
-        ):
-            # Lowest priority: only once crops are established (day gate) and
-            # there's healthy slack above reserve, spend a turn on animal
-            # infrastructure instead of another crop tile.
-            target = closest(pos, info["empty"])
-            build = "BUILD_COOP" if len(info["empty_coop"]) <= len(info["empty_pasture"]) else "BUILD_PASTURE"
-            action = act_or_move(pos, target, [build])
-            info["empty"].remove(target)
         elif inv:
             target = closest(pos, shed_spots)
             action = act_or_move(pos, target, ["DROP"])
@@ -377,15 +473,29 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     seeds = private.get("seeds", {}) or {}
     started_up = day >= config["startup_days"]
     opponent_supply = opponent_supply or {}
+    # Reward is money at game end, full stop -- unsold shed inventory and
+    # freshly-hired hands with no time left to earn back their cost are pure
+    # waste in the closing days. The #1 player visibly winds crop mix back
+    # down in the final ~5 days rather than planting things that won't
+    # mature; this is the same idea applied to market orders: stop paying
+    # for anything that can't pay itself back, and dump inventory for
+    # whatever it fetches instead of holding out for a better price that
+    # will never be realized.
+    winding_down = config["season_days"] - day <= config["wind_down_days"]
 
     # Sell everything sellable that's above threshold, in bounded chunks.
     # If the opponent's about to dump a lot of this item on the market
     # (visible from their public tiles), lower our own bar so we sell into
     # the current, still-healthy price instead of after their sale craters it.
+    # In the wind-down window, ignore the threshold entirely -- any price
+    # beats letting it sit unsold in the shed when the season ends.
     sellable = list(config["crops"]) + [a["product"] for a in ANIMALS.values()]
     for item in sellable:
         qty = shed.get(item, 0)
         if qty <= 0:
+            continue
+        if winding_down:
+            orders.append(["SELL", item, min(qty, config["max_sell_chunk"])])
             continue
         price = prices.get(item, _base_price(item))
         threshold = config["sell_fraction"] * _base_price(item)
@@ -400,19 +510,44 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         if seeds.get(crop, 0) == 0 and money >= max(CROPS[crop]["seed"], config["seed_money_floor"]):
             orders.append(["BUY_SEED", crop, 1])
 
-    # Land: buy the next quadrant once the current footprint is well used.
+    # Land: buy the next quadrant as soon as affordable, rather than waiting
+    # for high occupancy of the current footprint. Occupancy is a lagging,
+    # circular signal -- a thin labor force can't reach high utilization in
+    # the first place, so an occupancy-gated trigger can permanently starve
+    # itself of the very land expansion that would fix the labor shortage.
+    # The #1 player buys NE by day 5 and SW by day 10 on a near-fixed
+    # schedule that falls straight out of "buy it the moment you can afford
+    # it" given their income curve, not out of watching occupancy.
+    # ...but land is only worth buying once the crew can actually walk to
+    # and work it -- a wider board means more travel time per action, so
+    # unlocking a 4th quadrant while half the first three still sit empty
+    # just creates more unreachable dead land, not more income (confirmed
+    # locally: an earlier version that bought on affordability alone ended
+    # up with ~half of all unlocked tiles permanently empty). Require
+    # decent utilization of the current footprint too, matching land growth
+    # to demonstrated crew capacity instead of pure cash availability.
+    n_unlocked_extra = len(farm.get("unlocked_quadrants", ["NW"])) - 1
     unlocked = info["unlocked"]
-    if started_up and unlocked > 0:
-        utilization = info["occupied"] / unlocked
-        if utilization >= config["land_utilization_threshold"]:
+    utilization = info["occupied"] / unlocked if unlocked > 0 else 0
+    if (
+        not winding_down
+        and day >= config["land_startup_days"]
+        and utilization >= config["land_utilization_threshold"]
+        and 0 <= n_unlocked_extra < len(LAND_PRICES)
+    ):
+        next_land_cost = LAND_PRICES[n_unlocked_extra]
+        if money - reserve >= next_land_cost:
             orders.append(["BUY_LAND"])
 
     # Hire: only if there's enough pending work to keep another hand busy
     # (backlog per current unit exceeds the ratio) AND we can comfortably
     # absorb the (fibonacci-growing) cost. Without the backlog check, extra
-    # hands with nothing to do just wander to the shed and DROP/PASS.
+    # hands with nothing to do just wander to the shed and DROP/PASS. Not
+    # during wind-down -- a hand hired with 1-2 days left can't earn back
+    # even its own trivial cost, and existing hands are enough to keep
+    # harvesting/selling out whatever's left.
     hires_today = farm.get("hires_today", 0)
-    if hires_today < config["max_hires_per_day"]:
+    if not winding_down and hires_today < config["max_hires_per_day"]:
         unit_count = 1 + len(farm.get("hands", []) or [])
         backlog = (
             len(info["harvest"]) + len(info["water"]) + len(info["feed"])
@@ -425,24 +560,35 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         hire_cost = a
         if (
             backlog > unit_count * config["hire_backlog_ratio"]
-            and money - reserve >= hire_cost * config["hire_reserve_multiple"]
+            and money - config["hire_money_floor"] >= hire_cost * config["hire_reserve_multiple"]
         ):
             orders.append(["HIRE"])
 
-    if config["animal_enabled"] and started_up:
+    if config["animal_enabled"] and started_up and not winding_down:
         # Only buy up to the number of slots that are actually empty, minus
         # whatever's already bought-but-not-placed (shed + carried) -- a
         # slot being "empty" doesn't mean nothing is already en route to it.
-        goose_pending = shed.get("GOOSE", 0) + _carried_total(private, "GOOSE")
-        if len(info["empty_coop"]) > goose_pending and money - reserve >= ANIMALS["GOOSE"]["cost"]:
-            orders.append(["BUY_ANIMAL", "GOOSE", 1])
+        if config["enable_coop"]:
+            goose_pending = shed.get("GOOSE", 0) + _carried_total(private, "GOOSE")
+            if len(info["empty_coop"]) > goose_pending and money - reserve >= ANIMALS["GOOSE"]["cost"]:
+                orders.append(["BUY_ANIMAL", "GOOSE", 1])
         if info["empty_pasture"]:
             best = max(
                 ("COW", "SHEEP"),
                 key=lambda a: _animal_score(a, prices.get(ANIMALS[a]["product"], _base_price(ANIMALS[a]["product"]))),
             )
             pasture_pending = shed.get("COW", 0) + shed.get("SHEEP", 0) + _carried_total(private, "COW") + _carried_total(private, "SHEEP")
-            if len(info["empty_pasture"]) > pasture_pending and money - reserve >= ANIMALS[best]["cost"]:
+            # Pasture structures are free to build (see _plan_units), so
+            # they can outpace how many animals we can actually afford --
+            # target_structures alone doesn't throttle spending. Animals
+            # cost $400-500 each, far more than a hire, so they get their
+            # own (higher) reserve multiple rather than sharing hiring's,
+            # otherwise buying one for every empty pasture the moment it's
+            # built drains the day-0 cash pile that hiring/land also need.
+            if (
+                len(info["empty_pasture"]) > pasture_pending
+                and money - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"]
+            ):
                 orders.append(["BUY_ANIMAL", best, 1])
 
     # Top up fertilizer stock a little if we're not collecting enough from
