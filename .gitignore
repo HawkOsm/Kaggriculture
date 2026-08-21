@@ -5,4 +5,5 @@ replay.json
 kaggriculture-data/
 output/games
 .claude/
+.vscode/
 v27_agents

@@ -29,6 +29,7 @@ CONFIG = {'sell_fraction_base': 0.5682870864404602,
  'sell_fraction_max': 0.9,
  'cash_scale': 3700,
  'max_sell_chunk': 12,
+ 'sell_backlog_multiple': 2.5,
  'money_reserve': 460,
  'broke_phase_days_frac': 0.0,
  'broke_phase_reserve_scale': 1.0,
@@ -53,7 +54,19 @@ CONFIG = {'sell_fraction_base': 0.5682870864404602,
  'opponent_awareness_enabled': True,
  'opponent_incoming_threshold': 4,
  'opponent_race_discount': 0.5376137683171243,
- 'opponent_lookahead_days': 3}
+ 'opponent_lookahead_days': 3,
+ 'opponent_concentration_sensitivity': 0.3,
+ 'priority_weight_feed': 100.0,
+ 'priority_weight_care': 95.0,
+ 'priority_weight_harvest': 90.0,
+ 'priority_weight_fertilize': 85.0,
+ 'priority_weight_collect_fertilizer': 80.0,
+ 'priority_weight_water': 75.0,
+ 'priority_weight_empty_coop_place': 50.0,
+ 'priority_weight_empty_pasture_place': 45.0,
+ 'priority_weight_weeds': 20.0,
+ 'priority_weight_empty_build': 15.0,
+ 'priority_weight_empty_plant': 10.0}
 
 SAFE_FALLBACK = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -225,28 +238,33 @@ def _scan_farm(farm, board_size, day):
     return info
 
 
-def _assign_nearest(pending, candidates, act_fn, actions, continue_fn=None):
-    """Repeatedly assign the single globally-closest (unit, tile) pair
-    across all of `pending` x `candidates`, instead of processing units in
-    a fixed array order and letting each grab whatever's nearest to
-    *itself* regardless of whether some other still-unassigned unit is
-    actually closer to that same tile. Mutates `pending` (list of
-    [idx, pos, inv]) and `candidates` in place, removing what gets
-    assigned, and writes `actions[idx]`. `continue_fn`, if given, is
-    re-checked before every pair pick and stops the tier early once it
-    goes false (used by empty_build/empty_plant, whose eligibility --
-    structures/seed availability -- changes as the tier itself assigns).
+def _assign_nearest(pending, candidates, act_fn, actions, continue_fn=None, cost_fn=None):
+    """Repeatedly assign the single lowest-cost (unit, tile) pair across all
+    of `pending` x `candidates`, instead of processing units in a fixed
+    array order and letting each grab whatever's nearest to *itself*
+    regardless of whether some other still-unassigned unit is actually
+    closer to that same tile. Mutates `pending` (list of [idx, pos, inv])
+    and `candidates` in place, removing what gets assigned, and writes
+    `actions[idx]`. `continue_fn`, if given, is re-checked before every
+    pair pick and stops the tier early once it goes false (used by
+    empty_build/empty_plant, whose eligibility -- structures/seed
+    availability -- changes as the tier itself assigns). `cost_fn(pos,
+    target)`, if given, replaces plain Manhattan distance as the ranking
+    metric (used by empty_build/empty_plant to prefer clustering new
+    tiles against the existing footprint over pure proximity -- see
+    docs/tests/LOG.md).
     """
+    cost_fn = cost_fn or (lambda pos, t: abs(pos[0] - t[0]) + abs(pos[1] - t[1]))
     while pending and candidates:
         if continue_fn is not None and not continue_fn():
             break
         best = None
-        best_dist = None
+        best_cost = None
         for i, (idx, pos, inv) in enumerate(pending):
             for j, t in enumerate(candidates):
-                d = abs(pos[0] - t[0]) + abs(pos[1] - t[1])
-                if best_dist is None or d < best_dist:
-                    best_dist = d
+                c = cost_fn(pos, t)
+                if best_cost is None or c < best_cost:
+                    best_cost = c
                     best = (i, j)
         i, j = best
         idx, pos, inv = pending[i]
@@ -306,7 +324,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
         return inventories[idx] if idx < len(inventories) else {}
 
     # Target structure count scales with current labor AND unlocked land so
-    # pasture capacity builds out in step with both instead of all at once,
+    # pasture capacity builds out in step with land instead of all at once,
     # only once crop land runs out, or (the bug this quadrant factor fixes)
     # frozen forever once the starting pasture count already meets a
     # units-only target: with unit_count roughly constant for most of the
@@ -314,17 +332,32 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
     # 2nd/3rd quadrant's worth of new land never gets any pasture -- newly
     # unlocked land unconditionally became crop tiles instead, confirmed
     # live (pasture flat at its day-0 value the entire 29-day game across
-    # multiple matches) via replay review, see docs/tests/LOG.md. Building
-    # itself is free (only the animal costs money), so there's no cash
-    # reason to delay it.
+    # multiple matches) via replay review, see docs/tests/LOG.md.
+    #
+    # Uses *intended* labor scale (1 + max_hires_per_day), not len(units)
+    # (today's actual headcount) -- the original units-only version capped
+    # day-0 target near 1 regardless of max_structures, since there's only
+    # ever a lone farmer before any hire has landed. That directly
+    # contradicted the very next sentence in this comment: building is
+    # free (only the animal costs money), so there's no cash reason to
+    # delay it -- yet the formula delayed it anyway, gated on a headcount
+    # that hasn't caught up yet. Replay review of the strong opponents in
+    # our benchmark pool confirmed they build out full pasture capacity in
+    # the first few turns, well ahead of their own hiring curve, rather
+    # than growing it in step with current hands (see docs/tests/LOG.md).
+    # This still isn't "build everything on turn 0 no matter what" --
+    # max_structures and land availability (info["empty"] itself) remain
+    # the real caps -- it just stops using *today's* labor as an artificial
+    # third one.
     n_quadrants = len(farm.get("unlocked_quadrants", ["NW"]))
     structures_committed = info["pasture_count"] + info["coop_count"]
     if config["season_days"] - day <= config["wind_down_days"]:
         target_structures = 0  # no time left for a new pasture to pay back
     else:
+        intended_units = 1 + config["max_hires_per_day"]
         target_structures = min(
             config["max_structures"],
-            math.ceil(len(units) * config["pasture_target_ratio"] * n_quadrants),
+            math.ceil(intended_units * config["pasture_target_ratio"] * n_quadrants),
         )
 
     actions = {}
@@ -390,51 +423,120 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
         pending.append([idx, pos, inv])
 
     # --- Phase 2: batch tiers over shared, contested tile lists ---
-    def elig(pred):
-        return [u for u in pending if pred(u[2])]
+    #
+    # Tier EXECUTION order used to be a fixed sequence of calls -- discovering
+    # a starved tier (CARE was tier 12 of ~16, chronically shut out, see
+    # docs/tests/LOG.md) meant hand-editing this function and re-verifying.
+    # Instead, each tier is registered once as a runner keyed by name, and
+    # `config["priority_weight_<name>"]` (one real number per tier, all
+    # independently tunable -- KNOB_SPECS/optimize.py's search space)
+    # decides execution order by sorting descending each turn.
+    # A float-per-tier weight rather than a searched permutation directly:
+    # Optuna's default samplers handle independent continuous ranges far
+    # better than a combinatorial ordering, and "sort by score" is standard
+    # for exactly this kind of tunable scheduling problem. Defaults below
+    # reproduce the hand-tuned order this function used before this change
+    # (feed > care > harvest > fertilize > collect_fertilizer > water >
+    # empty_coop_place > empty_pasture_place > weeds > empty_build >
+    # empty_plant), so nothing changes unless the weights are.
+    def elig(p, pred):
+        return [u for u in p if pred(u[2])]
 
-    _assign_nearest(
-        elig(lambda inv: inv.get("WHEAT", 0) > 0),
-        info["feed"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "feed", act_or_move(pos, t, ["FEED"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
+    def _tier_feed(p):
+        _assign_nearest(
+            elig(p, lambda inv: inv.get("WHEAT", 0) > 0),
+            info["feed"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "feed", act_or_move(pos, t, ["FEED"])),
+            actions,
+        )
 
-    _assign_nearest(
-        list(pending),
-        info["harvest"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "harvest", act_or_move(pos, t, ["HARVEST"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
+    def _tier_care(p):
+        _assign_nearest(
+            list(p),
+            info["care"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "care", act_or_move(pos, t, ["CARE"])),
+            actions,
+        )
 
-    _assign_nearest(
-        elig(lambda inv: inv.get("FERTILIZER", 0) > 0),
-        info["fertilize"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "fertilize", act_or_move(pos, t, ["FERTILIZE"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
+    def _tier_harvest(p):
+        _assign_nearest(
+            list(p),
+            info["harvest"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "harvest", act_or_move(pos, t, ["HARVEST"])),
+            actions,
+        )
 
-    _assign_nearest(
-        list(pending),
-        info["collect_fertilizer"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "collect_fertilizer", act_or_move(pos, t, ["COLLECT_FERTILIZER"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
+    def _tier_fertilize(p):
+        _assign_nearest(
+            elig(p, lambda inv: inv.get("FERTILIZER", 0) > 0),
+            info["fertilize"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "fertilize", act_or_move(pos, t, ["FERTILIZE"])),
+            actions,
+        )
 
-    _assign_nearest(
-        list(pending),
-        info["water"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "water", act_or_move(pos, t, ["WATER"])),
-        actions,
+    def _tier_collect_fertilizer(p):
+        _assign_nearest(
+            list(p),
+            info["collect_fertilizer"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "collect_fertilizer", act_or_move(pos, t, ["COLLECT_FERTILIZER"])),
+            actions,
+        )
+
+    def _tier_water(p):
+        _assign_nearest(
+            list(p),
+            info["water"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "water", act_or_move(pos, t, ["WATER"])),
+            actions,
+        )
+
+    def _tier_empty_coop_place(p):
+        _assign_nearest(
+            elig(p, lambda inv: config["enable_coop"] and inv.get("GOOSE", 0) > 0),
+            info["empty_coop"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "empty_coop_place", act_or_move(pos, t, ["PLACE", "GOOSE"])),
+            actions,
+        )
+
+    def _tier_empty_pasture_place(p):
+        _assign_nearest(
+            elig(p, lambda inv: config["animal_enabled"] and (inv.get("COW", 0) > 0 or inv.get("SHEEP", 0) > 0)),
+            info["empty_pasture"],
+            lambda idx, pos, inv, t: commit(
+                idx, pos, t, "empty_pasture_place",
+                act_or_move(pos, t, ["PLACE", "COW" if inv.get("COW", 0) > 0 else "SHEEP"]),
+            ),
+            actions,
+        )
+
+    def _tier_weeds(p):
+        _assign_nearest(
+            list(p),
+            info["weeds"],
+            lambda idx, pos, inv, t: commit(idx, pos, t, "weeds", act_or_move(pos, t, ["DIG"])),
+            actions,
+        )
+
+    tier_order = sorted(
+        ("feed", "care", "harvest", "fertilize", "collect_fertilizer", "water",
+         "empty_coop_place", "empty_pasture_place", "weeds"),
+        key=lambda name: -config.get(f"priority_weight_{name}", 0.0),
     )
-    pending = [u for u in pending if u[0] not in actions]
+    tier_runners = {
+        "feed": _tier_feed, "care": _tier_care, "harvest": _tier_harvest,
+        "fertilize": _tier_fertilize, "collect_fertilizer": _tier_collect_fertilizer,
+        "water": _tier_water, "empty_coop_place": _tier_empty_coop_place,
+        "empty_pasture_place": _tier_empty_pasture_place, "weeds": _tier_weeds,
+    }
+    for name in tier_order:
+        tier_runners[name](pending)
+        pending = [u for u in pending if u[0] not in actions]
 
     # --- Shed pickups: no shared-resource contention (shed_spots aren't
-    # consumed), so per-unit is fine -- no benefit from batch matching. ---
+    # consumed), so per-unit is fine -- no benefit from batch matching, and
+    # not part of the dynamic-priority reordering above (each is a
+    # prerequisite step for a future turn's feed/fertilize/place, not a
+    # competing task in the same sense). ---
     still_pending = []
     for idx, pos, inv in pending:
         if inv.get("WHEAT", 0) == 0 and info["feed"] and shed.get("WHEAT", 0) > 0:
@@ -443,32 +545,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
         elif inv.get("FERTILIZER", 0) == 0 and info["fertilize"] and shed.get("FERTILIZER", 0) > 0:
             target = closest(pos, shed_spots)
             actions[idx] = act_or_move(pos, target, ["PICKUP", "FERTILIZER", min(shed["FERTILIZER"], 10)])
-        else:
-            still_pending.append([idx, pos, inv])
-    pending = still_pending
-
-    _assign_nearest(
-        elig(lambda inv: config["enable_coop"] and inv.get("GOOSE", 0) > 0),
-        info["empty_coop"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "empty_coop_place", act_or_move(pos, t, ["PLACE", "GOOSE"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
-
-    _assign_nearest(
-        elig(lambda inv: config["animal_enabled"] and (inv.get("COW", 0) > 0 or inv.get("SHEEP", 0) > 0)),
-        info["empty_pasture"],
-        lambda idx, pos, inv, t: commit(
-            idx, pos, t, "empty_pasture_place",
-            act_or_move(pos, t, ["PLACE", "COW" if inv.get("COW", 0) > 0 else "SHEEP"]),
-        ),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
-
-    still_pending = []
-    for idx, pos, inv in pending:
-        if config["enable_coop"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
+        elif config["enable_coop"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
             target = closest(pos, shed_spots)
             actions[idx] = act_or_move(pos, target, ["PICKUP", "GOOSE", 1])
         elif config["animal_enabled"] and info["empty_pasture"] and (shed.get("COW", 0) > 0 or shed.get("SHEEP", 0) > 0):
@@ -479,29 +556,48 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
             still_pending.append([idx, pos, inv])
     pending = still_pending
 
-    _assign_nearest(
-        list(pending),
-        info["care"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "care", act_or_move(pos, t, ["CARE"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
+    # New land gets claimed against a clustering-biased cost instead of pure
+    # distance-to-unit: prefer tiles touching the existing worked footprint
+    # (or another tile claimed earlier this same turn) over an equally-close
+    # tile that would start a new, disconnected patch. Distance-to-unit
+    # already turned out to be near-optimal on its own (measured mean 1.62
+    # tiles per water-tier assignment) -- the actual cost isn't long walks,
+    # it's that *every* tile still needs its own multi-turn trip regardless
+    # of how short. A tight, contiguous footprint turns a day's worth of
+    # water/harvest/feed visits into one short sweep instead of many
+    # separate short hops scattered across the board (see docs/tests/LOG.md).
+    claimed_this_turn = set()
+    tiles_grid = farm["tiles"]
 
-    _assign_nearest(
-        list(pending),
-        info["weeds"],
-        lambda idx, pos, inv, t: commit(idx, pos, t, "weeds", act_or_move(pos, t, ["DIG"])),
-        actions,
-    )
-    pending = [u for u in pending if u[0] not in actions]
+    def _occupied_neighbors(x, y):
+        count = 0
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if (nx, ny) in claimed_this_turn:
+                count += 1
+            elif 0 <= nx < board_size and 0 <= ny < board_size:
+                t = tiles_grid[ny][nx]
+                if t is not None and t != "LOCKED":
+                    count += 1
+        return count
+
+    CLUSTER_BONUS = 2.0
+
+    def _cluster_cost(pos, target):
+        d = abs(pos[0] - target[0]) + abs(pos[1] - target[1])
+        return d - CLUSTER_BONUS * _occupied_neighbors(target[0], target[1])
 
     # Build pasture (or coop, if enabled) capacity in step with current
-    # labor. Ranked above planting: BUILD_PASTURE is free, so there's no
-    # cash trade-off, only a tile-allocation one.
+    # labor. Ranked above planting by default: BUILD_PASTURE is free, so
+    # there's no cash trade-off, only a tile-allocation one -- but both are
+    # part of the same dynamic-priority system as the tiers above (they
+    # share info["empty"] as their candidate pool, so their order relative
+    # to *each other*, not just to the other 9 tiers, is meaningful too).
     def _build_act(idx, pos, inv, target):
         nonlocal structures_committed
         build = "BUILD_COOP" if config["enable_coop"] and info["coop_count"] <= info["pasture_count"] else "BUILD_PASTURE"
         action = commit(idx, pos, target, "empty_build", act_or_move(pos, target, [build]))
+        claimed_this_turn.add(target)
         # Count this tile toward the target immediately (not only once
         # actually built) -- otherwise every unit still mid-walk this turn
         # would see the same unmet target and all pile onto BUILD_PASTURE,
@@ -514,12 +610,14 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
                 info["pasture_count"] += 1
         return action
 
-    if config["animal_enabled"]:
+    def _tier_empty_build(p):
+        if not config["animal_enabled"]:
+            return
         _assign_nearest(
-            list(pending), info["empty"], _build_act, actions,
+            list(p), info["empty"], _build_act, actions,
             continue_fn=lambda: structures_committed < target_structures,
+            cost_fn=_cluster_cost,
         )
-        pending = [u for u in pending if u[0] not in actions]
 
     def _plant_act(idx, pos, inv, target):
         nonlocal crop_pool
@@ -531,6 +629,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
             ),
         )
         action = commit(idx, pos, target, "empty_plant", act_or_move(pos, target, ["PLANT", best_crop]))
+        claimed_this_turn.add(target)
         if pos == target:
             seeds[best_crop] = seeds.get(best_crop, 0) - 1
             if seeds[best_crop] <= 0:
@@ -538,11 +637,21 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
             crop_counts[best_crop] = crop_counts.get(best_crop, 0) + 1
         return action
 
-    _assign_nearest(
-        list(pending), info["empty"], _plant_act, actions,
-        continue_fn=lambda: any(season_ok.get(c, True) for c in crop_pool),
+    def _tier_empty_plant(p):
+        _assign_nearest(
+            list(p), info["empty"], _plant_act, actions,
+            continue_fn=lambda: any(season_ok.get(c, True) for c in crop_pool),
+            cost_fn=_cluster_cost,
+        )
+
+    land_tier_order = sorted(
+        ("empty_build", "empty_plant"),
+        key=lambda name: -config.get(f"priority_weight_{name}", 0.0),
     )
-    pending = [u for u in pending if u[0] not in actions]
+    land_tier_runners = {"empty_build": _tier_empty_build, "empty_plant": _tier_empty_plant}
+    for name in land_tier_order:
+        land_tier_runners[name](pending)
+        pending = [u for u in pending if u[0] not in actions]
 
     # --- Fallback: drop off whatever's left, or PASS. ---
     for idx, pos, inv in pending:
@@ -561,15 +670,31 @@ def _carried_total(private, item):
     return sum(inv.get(item, 0) for inv in (private.get("inventories", []) or []))
 
 
-def _opponent_incoming_supply(opponent_farm, board_size, day, lookahead_days):
-    """Estimate how much of each product the opponent is likely to dump on
-    the market soon, from their public tiles: already-ripe crops/animal
-    products, plus one-time crops that will mature within `lookahead_days`.
-    A rough signal, not a guarantee they'll actually sell -- but a rational
-    opponent usually does once something's ripe."""
+def _opponent_profile(opponent_farm, board_size, day, lookahead_days):
+    """Everything we can legally see about the opponent (their public
+    tiles/land/labor -- never their private shed or seed counts) reduced
+    to three things worth reacting to:
+
+    - `supply`: how much of each product they're likely to dump on the
+      market soon (already-ripe, or a one-time crop maturing within
+      `lookahead_days`) -- same estimate as before, just folded into this
+      one scan instead of a separate function, since both need the same
+      tile walk.
+    - `concentration`: {item: fraction of their occupied tiles producing
+      it}. An opponent running 80% wheat has a much bigger relative stake
+      in wheat's price than one running an even 5-crop split -- their
+      dump (and their own selling pressure generally) matters more for
+      that specific item.
+    - `scale`: 0-1, how big their whole operation currently is (land +
+      labor), independent of what they're growing -- a small opponent's
+      dump barely moves the shared price no matter how concentrated it
+      is; a large one's does even if diversified.
+    """
     supply = {}
+    item_tile_counts = {}
+    total_occupied = 0
     if opponent_farm is None:
-        return supply
+        return supply, {}, 0.0
     tiles = opponent_farm["tiles"]
     for y in range(board_size):
         row = tiles[y]
@@ -581,16 +706,32 @@ def _opponent_incoming_supply(opponent_farm, board_size, day, lookahead_days):
             if kind == "PLANT":
                 crop = tile["crop"]
                 c = CROPS[crop]
+                total_occupied += 1
+                item_tile_counts[crop] = item_tile_counts.get(crop, 0) + 1
                 if tile["yield_units"] > 0 and _plant_harvest_ready(tile, day):
                     supply[crop] = supply.get(crop, 0) + tile["yield_units"]
                 elif not c["ongoing"]:
                     days_to_ready = c["max_yield_day"] - (day - tile["planted_day"])
                     if 0 <= days_to_ready <= lookahead_days:
                         supply[crop] = supply.get(crop, 0) + c["max_yield"]
-            elif kind in ("COOP", "PASTURE") and "animal" in tile and tile["yield_units"] > 0:
+            elif kind in ("COOP", "PASTURE") and "animal" in tile:
+                total_occupied += 1
                 product = ANIMALS[tile["animal"]]["product"]
-                supply[product] = supply.get(product, 0) + tile["yield_units"]
-    return supply
+                item_tile_counts[product] = item_tile_counts.get(product, 0) + 1
+                if tile["yield_units"] > 0:
+                    supply[product] = supply.get(product, 0) + tile["yield_units"]
+
+    concentration = (
+        {item: cnt / total_occupied for item, cnt in item_tile_counts.items()}
+        if total_occupied > 0 else {}
+    )
+    n_quadrants = len(opponent_farm.get("unlocked_quadrants", ["NW"]))
+    unit_count = 1 + len(opponent_farm.get("hands", []) or [])
+    # Normalized against the range this session's traced strong opponents
+    # actually reach at their peak (3-4 quadrants, 12-14 hands) -- see
+    # docs/tests/LOG.md -- not an arbitrary guess.
+    scale = min(1.0, (n_quadrants / 4.0) * 0.5 + (unit_count / 14.0) * 0.5)
+    return supply, concentration, scale
 
 
 def _dynamic_sell_fraction(config, day, money):
@@ -610,7 +751,8 @@ def _dynamic_sell_fraction(config, day, money):
     return min(config["sell_fraction_max"], max(config["sell_fraction_min"], raw))
 
 
-def _market_orders(farm, private, info, config, prices, day, opponent_supply=None):
+def _market_orders(farm, private, info, config, prices, day, opponent_supply=None,
+                    opponent_concentration=None, opponent_scale=0.0):
     orders = []
     money = farm["money"]
     # Optional "broke phase": scale every spending reserve/gate down for the
@@ -633,6 +775,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     seeds = private.get("seeds", {}) or {}
     started_up = day >= config["startup_days"]
     opponent_supply = opponent_supply or {}
+    opponent_concentration = opponent_concentration or {}
     # Reward is money at game end, full stop -- unsold shed inventory and
     # freshly-hired hands with no time left to earn back their cost are pure
     # waste in the closing days. The #1 player visibly winds crop mix back
@@ -649,7 +792,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # the current, still-healthy price instead of after their sale craters it.
     # In the wind-down window, ignore the threshold entirely -- any price
     # beats letting it sit unsold in the shed when the season ends.
-    sellable = list(config["crops"]) + [a["product"] for a in ANIMALS.values()]
+    sellable = list(config["crops"]) + [a["product"] for a in ANIMALS.values()] + ["FERTILIZER"]
     sell_fraction = _dynamic_sell_fraction(config, day, money)
     for item in sellable:
         qty = shed.get(item, 0)
@@ -658,18 +801,121 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         if winding_down:
             orders.append(["SELL", item, min(qty, config["max_sell_chunk"])])
             continue
+        # Tried forcing a sale once backlog crossed a threshold (same idea
+        # as wind-down's unconditional sell, but quantity-triggered) --
+        # reverted: unlike crops, shed inventory doesn't decay while
+        # waiting, so a forced sale at a crashed price permanently
+        # realizes a loss instead of waiting for the (slow but real) price
+        # recovery -- measured strictly worse in a 6-episode check (see
+        # docs/tests/LOG.md). `sell_backlog_multiple` stays in
+        # DEFAULT_CONFIG/KNOB_SPECS/optimize.py's search space (harmless,
+        # unused here) in case a smarter version of this idea gets
+        # revisited later.
         price = prices.get(item, _base_price(item))
         threshold = sell_fraction * _base_price(item)
         if config["opponent_awareness_enabled"] and opponent_supply.get(item, 0) >= config["opponent_incoming_threshold"]:
-            threshold *= config["opponent_race_discount"]
+            # How hard to race the opponent's incoming dump isn't one fixed
+            # number -- it scales with how much of a threat THIS dump
+            # actually is: an opponent running 80% of their land in one
+            # crop has a much bigger stake in it (and a much bigger dump
+            # coming) than one growing it as a side crop, and a small-scale
+            # opponent's dump barely moves the shared price no matter how
+            # concentrated. Ablation (docs/tests/LOG.md) found the single
+            # best static discount for one opponent was a clear loss
+            # against another -- the right amount of race genuinely depends
+            # on who's across the board, so make it a function of what we
+            # can actually observe about them instead of one guess.
+            concentration = opponent_concentration.get(item, 0.0)
+            threat = concentration * opponent_scale
+            dynamic_discount = config["opponent_race_discount"] - config["opponent_concentration_sensitivity"] * threat
+            threshold *= max(0.1, min(1.0, dynamic_discount))
         if price >= threshold:
             orders.append(["SELL", item, min(qty, config["max_sell_chunk"])])
+
+    # Every gate below used to check the SAME `money` snapshot read at the
+    # top of this function, never accounting for what earlier orders THIS
+    # SAME TURN had already committed to spend -- so on any turn where
+    # land + hire + an animal were each individually affordable but not all
+    # three combined, we'd queue all of them anyway, and whichever the
+    # engine processes last would silently lose the race for cash (orders
+    # are "processed in order, per player" -- docs/GAME_GUIDE.md). Since
+    # BUY_ANIMAL was the last block in this function, it was the most
+    # likely to get squeezed out -- a real, previously-undiagnosed
+    # contributor to animals growing much more slowly than the strong
+    # opponents' (see docs/tests/LOG.md, replay review). `remaining` tracks
+    # an honest running balance across every order queued below; sell
+    # proceeds aren't added speculatively (same-turn availability isn't
+    # guaranteed), only spends are subtracted, so this is a conservative
+    # fix, not an optimistic one.
+    remaining = money
 
     # Keep at least one seed on hand per grown crop so a unit can always
     # plant whatever the scoring function currently prefers.
     for crop in config["crops"]:
-        if seeds.get(crop, 0) == 0 and money >= max(CROPS[crop]["seed"], config["seed_money_floor"]):
+        if seeds.get(crop, 0) == 0 and remaining >= max(CROPS[crop]["seed"], config["seed_money_floor"]):
             orders.append(["BUY_SEED", crop, 1])
+            remaining -= CROPS[crop]["seed"]
+
+    # Animals first: replay review of the strong opponents in our benchmark
+    # pool shows them hyper-optimizing the *current* footprint with animals
+    # (packing the field they already have, not racing to unlock more land)
+    # rather than treating land expansion as the priority -- land moved
+    # below hire/animal in this ordering to match, and to make sure animal
+    # purchases get first claim on `remaining` each turn instead of last.
+    if config["animal_enabled"] and started_up and not winding_down:
+        # Only buy up to the number of slots that are actually empty, minus
+        # whatever's already bought-but-not-placed (shed + carried) -- a
+        # slot being "empty" doesn't mean nothing is already en route to it.
+        if config["enable_coop"]:
+            goose_pending = shed.get("GOOSE", 0) + _carried_total(private, "GOOSE")
+            if len(info["empty_coop"]) > goose_pending and remaining - reserve >= ANIMALS["GOOSE"]["cost"]:
+                orders.append(["BUY_ANIMAL", "GOOSE", 1])
+                remaining -= ANIMALS["GOOSE"]["cost"]
+        if info["empty_pasture"]:
+            best = max(
+                ("COW", "SHEEP"),
+                key=lambda a: _animal_score(a, prices.get(ANIMALS[a]["product"], _base_price(ANIMALS[a]["product"]))),
+            )
+            pasture_pending = shed.get("COW", 0) + shed.get("SHEEP", 0) + _carried_total(private, "COW") + _carried_total(private, "SHEEP")
+            # Pasture structures are free to build (see _plan_units), so
+            # they can outpace how many animals we can actually afford --
+            # target_structures alone doesn't throttle spending. Animals
+            # cost $400-500 each, far more than a hire, so they get their
+            # own (higher) reserve multiple rather than sharing hiring's,
+            # otherwise buying one for every empty pasture the moment it's
+            # built drains the day-0 cash pile that hiring/land also need.
+            if (
+                len(info["empty_pasture"]) > pasture_pending
+                and remaining - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * phase_scale
+            ):
+                orders.append(["BUY_ANIMAL", best, 1])
+                remaining -= ANIMALS[best]["cost"]
+
+    # Hire: only if there's enough pending work to keep another hand busy
+    # (backlog per current unit exceeds the ratio) AND we can comfortably
+    # absorb the (fibonacci-growing) cost. Without the backlog check, extra
+    # hands with nothing to do just wander to the shed and DROP/PASS. Not
+    # during wind-down -- a hand hired with 1-2 days left can't earn back
+    # even its own trivial cost, and existing hands are enough to keep
+    # harvesting/selling out whatever's left.
+    hires_today = farm.get("hires_today", 0)
+    if not winding_down and hires_today < config["max_hires_per_day"]:
+        unit_count = 1 + len(farm.get("hands", []) or [])
+        backlog = (
+            len(info["harvest"]) + len(info["water"]) + len(info["feed"])
+            + len(info["weeds"]) + len(info["fertilize"]) + len(info["empty"])
+        )
+        # fib(n) with fib(0)=1,fib(1)=1,fib(2)=2,... matches the engine's cost curve.
+        a, b = 1, 1
+        for _ in range(hires_today):
+            a, b = b, a + b
+        hire_cost = a
+        if (
+            backlog > unit_count * config["hire_backlog_ratio"]
+            and remaining - config["hire_money_floor"] * phase_scale >= hire_cost * config["hire_reserve_multiple"] * phase_scale
+        ):
+            orders.append(["HIRE"])
+            remaining -= hire_cost
 
     # Land: buy the next quadrant as soon as affordable, rather than waiting
     # for high occupancy of the current footprint. Occupancy is a lagging,
@@ -697,75 +943,26 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         and 0 <= n_unlocked_extra < len(LAND_PRICES)
     ):
         next_land_cost = LAND_PRICES[n_unlocked_extra]
-        if money - reserve >= next_land_cost:
+        if remaining - reserve >= next_land_cost:
             orders.append(["BUY_LAND"])
-
-    # Hire: only if there's enough pending work to keep another hand busy
-    # (backlog per current unit exceeds the ratio) AND we can comfortably
-    # absorb the (fibonacci-growing) cost. Without the backlog check, extra
-    # hands with nothing to do just wander to the shed and DROP/PASS. Not
-    # during wind-down -- a hand hired with 1-2 days left can't earn back
-    # even its own trivial cost, and existing hands are enough to keep
-    # harvesting/selling out whatever's left.
-    hires_today = farm.get("hires_today", 0)
-    if not winding_down and hires_today < config["max_hires_per_day"]:
-        unit_count = 1 + len(farm.get("hands", []) or [])
-        backlog = (
-            len(info["harvest"]) + len(info["water"]) + len(info["feed"])
-            + len(info["weeds"]) + len(info["fertilize"]) + len(info["empty"])
-        )
-        # fib(n) with fib(0)=1,fib(1)=1,fib(2)=2,... matches the engine's cost curve.
-        a, b = 1, 1
-        for _ in range(hires_today):
-            a, b = b, a + b
-        hire_cost = a
-        if (
-            backlog > unit_count * config["hire_backlog_ratio"]
-            and money - config["hire_money_floor"] * phase_scale >= hire_cost * config["hire_reserve_multiple"] * phase_scale
-        ):
-            orders.append(["HIRE"])
-
-    if config["animal_enabled"] and started_up and not winding_down:
-        # Only buy up to the number of slots that are actually empty, minus
-        # whatever's already bought-but-not-placed (shed + carried) -- a
-        # slot being "empty" doesn't mean nothing is already en route to it.
-        if config["enable_coop"]:
-            goose_pending = shed.get("GOOSE", 0) + _carried_total(private, "GOOSE")
-            if len(info["empty_coop"]) > goose_pending and money - reserve >= ANIMALS["GOOSE"]["cost"]:
-                orders.append(["BUY_ANIMAL", "GOOSE", 1])
-        if info["empty_pasture"]:
-            best = max(
-                ("COW", "SHEEP"),
-                key=lambda a: _animal_score(a, prices.get(ANIMALS[a]["product"], _base_price(ANIMALS[a]["product"]))),
-            )
-            pasture_pending = shed.get("COW", 0) + shed.get("SHEEP", 0) + _carried_total(private, "COW") + _carried_total(private, "SHEEP")
-            # Pasture structures are free to build (see _plan_units), so
-            # they can outpace how many animals we can actually afford --
-            # target_structures alone doesn't throttle spending. Animals
-            # cost $400-500 each, far more than a hire, so they get their
-            # own (higher) reserve multiple rather than sharing hiring's,
-            # otherwise buying one for every empty pasture the moment it's
-            # built drains the day-0 cash pile that hiring/land also need.
-            if (
-                len(info["empty_pasture"]) > pasture_pending
-                and money - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * phase_scale
-            ):
-                orders.append(["BUY_ANIMAL", best, 1])
+            remaining -= next_land_cost
 
     # Top up fertilizer stock a little if we're not collecting enough from
     # animals yet and there's something worth fertilizing. Off by default --
     # animal-collected fertilizer is free, buying it is a marginal spend.
     if config["buy_fertilizer"] and started_up and info["fertilize"]:
         fert_total = shed.get("FERTILIZER", 0) + _carried_total(private, "FERTILIZER")
-        if fert_total < 3 and money - reserve >= _base_price("FERTILIZER"):
+        if fert_total < 3 and remaining - reserve >= _base_price("FERTILIZER"):
             orders.append(["BUY_PRODUCT", "FERTILIZER", 1])
+            remaining -= _base_price("FERTILIZER")
 
     # Emergency wheat buy so animals don't starve if we're not growing any --
     # only when truly none is available anywhere (shed or carried), so this
     # can't re-trigger just because a unit is mid-transit with a full load.
     wheat_total = shed.get("WHEAT", 0) + _carried_total(private, "WHEAT")
-    if info["feed"] and wheat_total == 0 and money - reserve >= _base_price("WHEAT"):
+    if info["feed"] and wheat_total == 0 and remaining - reserve >= _base_price("WHEAT"):
         orders.append(["BUY_PRODUCT", "WHEAT", min(len(info["feed"]), 3)])
+        remaining -= _base_price("WHEAT")
 
     return orders[:10]
 
@@ -797,8 +994,13 @@ def make_agent(config):
             prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
 
             info = _scan_farm(farm, board_size, day)
-            opponent_supply = _opponent_incoming_supply(opponent_farm, board_size, day, cfg["opponent_lookahead_days"])
-            market_orders = _market_orders(farm, private, info, cfg, prices, day, opponent_supply)
+            opponent_supply, opponent_concentration, opponent_scale = _opponent_profile(
+                opponent_farm, board_size, day, cfg["opponent_lookahead_days"]
+            )
+            market_orders = _market_orders(
+                farm, private, info, cfg, prices, day,
+                opponent_supply, opponent_concentration, opponent_scale,
+            )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, cfg, prices, state["unit_targets"]
             )

@@ -45,6 +45,39 @@ Each file's own docstring carries this same attribution; this table is just the 
 | `prvsiyan_frontier_agent.py` | Composite of three notebooks: [Kaggriculture Frontier \| The Soil Remembers Rain](https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-soil-remembers-rain), [Kaggriculture Frontier \| The Moon Counts Melons](https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-moon-counts-melons), [Kaggle Frontier Lab \| Strategy Improvement](https://www.kaggle.com/code/prvsiyan/kaggle-frontier-lab-strategy-improvement) | prvsiyan | prvsiyan's "Frontier" strategy family -- the shipped agent composes the soil/route module, the moon/terminal-liquidation module, and the strategy-improvement module from these three notebooks (see the `_RC5_NS`/`_MOON_TERMINAL_NS`/`_MODAL_NS` namespaces in the file) |
 | `tran_hh_agent.py` | No source notebook -- direct reconstruction from public replay [episode 89674601](https://www.kaggle.com/competitions/kaggriculture/leaderboard), seat 0 | n/a (replay-derived, not a notebook) | Tran H Hoang (per the replay's own player attribution) |
 
+## Near-tier opponent agents (`src/opponents/`)
+
+Unlike the nine above (all 2500+ Elo, pulled to represent aspirational strength), these
+two were deliberately pulled from the **middle of the live leaderboard** (~rank
+4000-4500 of 5684 at pull time, score 430-510) to match our own current live rating
+(~467) -- see `docs/tests/LOG.md` for why: the live ladder matches submissions against
+opponents near their own rating, not the strongest bots, so a benchmark pool that's
+uniformly 2500+ tells us nothing about whether we're winning the games that actually
+move our rating right now.
+
+| File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-21) |
+|---|---|---|---|
+| `rajan1673_agent.py` | [kagriculture](https://www.kaggle.com/code/rajan1673/kagriculture) | rajan jha | #4478/5684, 434.7 |
+| `chaitanyajamble_agent.py` | [Kaggriculture](https://www.kaggle.com/code/chaitanyajamble/kaggriculture) | Chaitanya Jamble | #4058/5684, 507.2 |
+
+Both extracted from a `%%writefile` cell in their respective notebooks (standard
+pattern for Kaggle notebook agents), verbatim aside from adding the file's attribution
+docstring and the `<name>_agent = agent` export alias. Checked against the existing
+nine for duplication (AST def-name-set diffing, same methodology as the 2500+ pool) --
+zero meaningful overlap with any of them.
+
+### Why these two specifically
+
+Chose the closest score matches to our own live rating available with a real
+`%%writefile`-style submittable agent (not a starter-kit copy or a pure analysis
+notebook -- e.g. `nagatakengo/kaggriculture-movements-top-xx`, initially considered for
+its near-identical score of 474.5, turned out to be a replay-analysis notebook with no
+`agent(obs)` function at all, not usable as an opponent). Both decisively beat `random`
+(28k/43k vs 0, weaker than the 2500+ pool's 77k-174k, consistent with their tier) and
+gave a genuinely informative result against our current submission: **4W-0L vs
+`rajan1673_agent`** (avg margin +25,046), **0W-4L vs `chaitanyajamble_agent`** but by a
+much smaller margin (avg -7,548) than anything against the 2500+ pool (-100k to -135k).
+
 ### Why these nine specifically
 
 Cross-checked notebook authors against the public leaderboard where possible (e.g. "Rayk

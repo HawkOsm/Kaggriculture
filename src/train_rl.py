@@ -53,7 +53,7 @@ from agent import (
     DEFAULT_CONFIG,
     SAFE_FALLBACK,
     _market_orders,
-    _opponent_incoming_supply,
+    _opponent_profile,
     _plan_units,
     _scan_farm,
     decode_knobs,
@@ -157,10 +157,13 @@ def make_training_agent(net, base_cfg, transitions, deterministic=False):
             turn_cfg = state["cfg"]
 
             info = _scan_farm(farm, board_size, day)
-            opponent_supply = _opponent_incoming_supply(
+            opponent_supply, opponent_concentration, opponent_scale = _opponent_profile(
                 opponent_farm, board_size, day, turn_cfg["opponent_lookahead_days"]
             )
-            market_orders = _market_orders(farm, private, info, turn_cfg, prices, day, opponent_supply)
+            market_orders = _market_orders(
+                farm, private, info, turn_cfg, prices, day,
+                opponent_supply, opponent_concentration, opponent_scale,
+            )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, turn_cfg, prices, state["unit_targets"]
             )
@@ -185,31 +188,31 @@ def _build_opponent(spec, champion_config, net, base_cfg):
         agent, _ = make_training_agent(net, base_cfg, [], deterministic=False)
         return agent
     if spec == "kawa":
-        from kawa_route_agent import kawa_route_agent
+        from opponents.kawa_route_agent import kawa_route_agent
         return kawa_route_agent
     if spec == "boatlee_v16":
-        from boatlee_v16_agent import boatlee_v16_agent
+        from opponents.boatlee_v16_agent import boatlee_v16_agent
         return boatlee_v16_agent
     if spec == "rayk_c95":
-        from rayk_c95_agent import rayk_c95_agent
+        from opponents.rayk_c95_agent import rayk_c95_agent
         return rayk_c95_agent
     if spec == "saiteja":
-        from saiteja_agent import saiteja_agent
+        from opponents.saiteja_agent import saiteja_agent
         return saiteja_agent
     if spec == "kaito":
-        from kaito_agent import kaito_agent
+        from opponents.kaito_agent import kaito_agent
         return kaito_agent
     if spec == "tran_hh":
-        from tran_hh_agent import tran_hh_agent
+        from opponents.tran_hh_agent import tran_hh_agent
         return tran_hh_agent
     if spec == "pilkwang":
-        from pilkwang_agent import pilkwang_agent
+        from opponents.pilkwang_agent import pilkwang_agent
         return pilkwang_agent
     if spec == "romanrozen":
-        from romanrozen_agent import romanrozen_agent
+        from opponents.romanrozen_agent import romanrozen_agent
         return romanrozen_agent
     if spec == "prvsiyan_frontier":
-        from prvsiyan_frontier_agent import prvsiyan_frontier_agent
+        from opponents.prvsiyan_frontier_agent import prvsiyan_frontier_agent
         return prvsiyan_frontier_agent
     raise ValueError(f"unknown opponent spec {spec!r}")
 

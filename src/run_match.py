@@ -18,15 +18,21 @@ Benchmark opponents (melon_maxxer, multi_crop, quick_start_agent, kawa_route_age
 live in opponents/, kept separate from this repo's own agent code (agent.py
 etc.) directly in src/.
 
-Every run saves a result.json + replay.html + a best_config.json snapshot into
-output/games/<timestamp>_<slug>/ by default (pass --no-save to skip) -- open
-replay.html in a browser to watch the match. This is the working-folder artifact
-backing a LOG.md entry: the log has the scannable summary, this directory has the
-actual thing that was run. output/games/ is for one-off test/verification games
-only -- RL training checkpoints and logs live in src/rl_checkpoints/, untouched
-by this script.
+Every run saves a result.json + replay.html + a best_config.json snapshot +
+actions.csv into output/games/<timestamp>_<slug>/ by default (pass --no-save
+to skip) -- open replay.html in a browser to watch the match, or actions.csv
+for a continuous per-turn, per-unit log of every position and action both
+players took (one row per unit per step; farmer + hands; both players, not
+just ours) -- this is what every ad hoc instrumentation script this project
+built during development (tier/movement audits, production audits, distance
+probes) reconstructed by hand each time; now it's just there for any run.
+This is the working-folder artifact backing a LOG.md entry: the log has the
+scannable summary, this directory has the actual thing that was run.
+output/games/ is for one-off test/verification games only -- RL training
+checkpoints and logs live in src/rl_checkpoints/, untouched by this script.
 """
 import argparse
+import csv
 import importlib
 import json
 import shutil
@@ -62,6 +68,55 @@ def load_agent(spec):
     return getattr(module, func_name)
 
 
+def _format_action(action):
+    if not action:
+        return ""
+    return " ".join(str(x) for x in action)
+
+
+def _write_action_log(env, agent_names, out_path):
+    """One row per unit per step per player: position + action taken.
+    Reconstructed entirely from env.steps (each step's .action is what that
+    player actually submitted, .observation.farms[player] has positions) --
+    no agent instrumentation needed, works for any opponent including
+    black-box ones we don't control the source of."""
+    rows = []
+    for step_idx, step_states in enumerate(env.steps):
+        for player, state in enumerate(step_states):
+            obs = state.observation
+            action = state.action or {}
+            day = obs.get("day", "") if hasattr(obs, "get") else ""
+            money = ""
+            farms = obs.get("farms", []) if hasattr(obs, "get") else []
+            if 0 <= player < len(farms):
+                money = farms[player].get("money", "")
+                farmer_pos = tuple(farms[player].get("farmer", []) or [])
+                hand_positions = [tuple(p) for p in (farms[player].get("hands", []) or [])]
+            else:
+                farmer_pos = ()
+                hand_positions = []
+            rows.append({
+                "step": step_idx, "day": day, "player": player,
+                "agent": agent_names[player], "money": money,
+                "unit": "farmer", "pos": farmer_pos,
+                "action": _format_action(action.get("farmer")),
+            })
+            hand_actions = action.get("hands") or []
+            for i, pos in enumerate(hand_positions):
+                hand_action = hand_actions[i] if i < len(hand_actions) else None
+                rows.append({
+                    "step": step_idx, "day": day, "player": player,
+                    "agent": agent_names[player], "money": money,
+                    "unit": f"hand{i}", "pos": pos,
+                    "action": _format_action(hand_action),
+                })
+
+    with open(out_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["step", "day", "player", "agent", "money", "unit", "pos", "action"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("agent0")
@@ -93,6 +148,7 @@ def main():
             "episode_steps": args.episode_steps, "results": results,
         }, indent=2))
         (run_dir / "replay.html").write_text(env.render(mode="html"))
+        _write_action_log(env, [args.agent0, args.agent1], run_dir / "actions.csv")
         best_config_path = HERE / "best_config.json"
         if best_config_path.exists():
             shutil.copy(best_config_path, run_dir / "best_config_snapshot.json")

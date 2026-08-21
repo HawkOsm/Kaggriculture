@@ -5,6 +5,11 @@
   `docs/tests/LOG.md` before moving on. See `docs/tests/README.md` for the entry format. This applies
   whether the run was requested explicitly or done as part of verifying other work (e.g. confirming a
   refactor didn't change behavior).
+- **Before trying a strategic idea (spending posture, dispatch approach, config direction), check
+  `docs/tests/IDEAS_TRIED.md` first.** It's a concept-indexed ledger of what's already been tried and
+  its verdict, distilled from `LOG.md` — most "spend/expand more aggressively" variants have already
+  been tried and regressed; don't re-run one under a new name without checking there first. Add a row
+  when a new idea gets a real verdict.
 
 ## Token-conscious doc reading
 

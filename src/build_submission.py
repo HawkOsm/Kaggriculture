@@ -25,7 +25,7 @@ FARM_UTILS_FUNCS = ["step_toward", "closest", "act_or_move", "shed_tiles"]
 ROBUST_AGENT_FUNCS = [
     "_crop_cycle_days", "_crop_score", "_diversified_crop_score", "_animal_score",
     "_base_price", "_plant_harvest_ready", "_scan_farm", "_assign_nearest", "_plan_units",
-    "_carried_total", "_opponent_incoming_supply", "_dynamic_sell_fraction", "_market_orders",
+    "_carried_total", "_opponent_profile", "_dynamic_sell_fraction", "_market_orders",
 ]
 # Module-level dicts _plan_units depends on (not `def`s, so _extract_funcs
 # below can't see them). _check_completeness below catches a name missing
@@ -193,8 +193,13 @@ def make_agent(config):
             prices = (obs.get("market", {{}}) or {{}}).get("prices", {{}}) or {{}}
 
             info = _scan_farm(farm, board_size, day)
-            opponent_supply = _opponent_incoming_supply(opponent_farm, board_size, day, cfg["opponent_lookahead_days"])
-            market_orders = _market_orders(farm, private, info, cfg, prices, day, opponent_supply)
+            opponent_supply, opponent_concentration, opponent_scale = _opponent_profile(
+                opponent_farm, board_size, day, cfg["opponent_lookahead_days"]
+            )
+            market_orders = _market_orders(
+                farm, private, info, cfg, prices, day,
+                opponent_supply, opponent_concentration, opponent_scale,
+            )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, cfg, prices, state["unit_targets"]
             )

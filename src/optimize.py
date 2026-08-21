@@ -41,16 +41,16 @@ import optuna
 
 from kaggle_environments import make as make_env
 
-from agent import DEFAULT_CONFIG, make_agent
-from kawa_route_agent import kawa_route_agent
-from boatlee_v16_agent import boatlee_v16_agent
-from rayk_c95_agent import rayk_c95_agent
-from saiteja_agent import saiteja_agent
-from kaito_agent import kaito_agent
-from tran_hh_agent import tran_hh_agent
-from pilkwang_agent import pilkwang_agent
-from romanrozen_agent import romanrozen_agent
-from prvsiyan_frontier_agent import prvsiyan_frontier_agent
+from agent import DEFAULT_CONFIG, PRIORITY_TIER_NAMES, make_agent
+from opponents.kawa_route_agent import kawa_route_agent
+from opponents.boatlee_v16_agent import boatlee_v16_agent
+from opponents.rayk_c95_agent import rayk_c95_agent
+from opponents.saiteja_agent import saiteja_agent
+from opponents.kaito_agent import kaito_agent
+from opponents.tran_hh_agent import tran_hh_agent
+from opponents.pilkwang_agent import pilkwang_agent
+from opponents.romanrozen_agent import romanrozen_agent
+from opponents.prvsiyan_frontier_agent import prvsiyan_frontier_agent
 
 # Real opponent agents, keyed by the name used in --opponents. "champion" is
 # handled separately (built fresh from champion_config each call, not fixed).
@@ -106,7 +106,7 @@ def load_champion_config():
 
 
 def sample_config(trial):
-    return {
+    cfg = {
         # Linear state-dependent sell-threshold policy (see robust_agent's
         # _dynamic_sell_fraction) -- Optuna searches the weights of a small
         # function instead of one constant. This is the "hybrid RL" layer:
@@ -117,6 +117,7 @@ def sample_config(trial):
         "sell_fraction_cash_weight": trial.suggest_float("sell_fraction_cash_weight", -0.3, 0.3),
         "cash_scale": trial.suggest_int("cash_scale", 200, 4000, step=100),
         "max_sell_chunk": trial.suggest_int("max_sell_chunk", 3, 20),
+        "sell_backlog_multiple": trial.suggest_float("sell_backlog_multiple", 1.0, 6.0),
         "money_reserve": trial.suggest_int("money_reserve", 20, 500, step=20),
         "seed_money_floor": trial.suggest_int("seed_money_floor", 5, 50),
         "hire_money_floor": trial.suggest_int("hire_money_floor", 0, 100, step=10),
@@ -144,9 +145,19 @@ def sample_config(trial):
         "opponent_awareness_enabled": True,
         "opponent_incoming_threshold": trial.suggest_int("opponent_incoming_threshold", 1, 10),
         "opponent_race_discount": trial.suggest_float("opponent_race_discount", 0.3, 1.0),
+        "opponent_concentration_sensitivity": trial.suggest_float("opponent_concentration_sensitivity", 0.0, 1.0),
         "opponent_lookahead_days": trial.suggest_int("opponent_lookahead_days", 0, 5),
         "crop_profile": trial.suggest_categorical("crop_profile", sorted(CROP_PROFILES.keys())),
     }
+    # One float knob per _plan_units dispatch tier -- lets the search find a
+    # better task-priority order instead of it only changing when someone
+    # reads actions.csv and hand-edits the function order (see
+    # docs/tests/LOG.md, and DEFAULT_CONFIG's priority_weight_* comment in
+    # agent.py for why this is float-per-tier rather than a searched
+    # permutation).
+    for name in PRIORITY_TIER_NAMES:
+        cfg[f"priority_weight_{name}"] = trial.suggest_float(f"priority_weight_{name}", 0.0, 100.0)
+    return cfg
 
 
 def _resolve_search_config(params):
