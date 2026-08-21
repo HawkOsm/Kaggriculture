@@ -29,7 +29,7 @@
   "diversification_weight": 0.603006467216205,
   "season_days": 30,
   "wind_down_days": 3,
-  "opponent_awareness_enabled": false,
+  "opponent_awareness_enabled": true,
   "opponent_incoming_threshold": 4,
   "opponent_race_discount": 0.5376137683171243,
   "opponent_lookahead_days": 3

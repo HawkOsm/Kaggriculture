@@ -80,6 +80,10 @@ DEFAULT_CONFIG = {
     # gap before first income, which is a real failure mode we hit tuning
     # this (see docs/tests/LOG.md).
     "money_reserve": 100,
+    # See _market_orders' phase_scale: disabled by default (frac=0 means
+    # "day < 0" is never true, scale is never applied).
+    "broke_phase_days_frac": 0.0,
+    "broke_phase_reserve_scale": 1.0,
     # Seed costs are small; allow buying seeds even close to the reserve.
     "seed_money_floor": 20,
     # Hire cost is a fibonacci curve that resets to $1 every day -- even the
@@ -321,22 +325,62 @@ TASK_INFO_KEY = {
 }
 
 
+def _assign_nearest(pending, candidates, act_fn, actions, continue_fn=None):
+    """Repeatedly assign the single globally-closest (unit, tile) pair
+    across all of `pending` x `candidates`, instead of processing units in
+    a fixed array order and letting each grab whatever's nearest to
+    *itself* regardless of whether some other still-unassigned unit is
+    actually closer to that same tile. Mutates `pending` (list of
+    [idx, pos, inv]) and `candidates` in place, removing what gets
+    assigned, and writes `actions[idx]`. `continue_fn`, if given, is
+    re-checked before every pair pick and stops the tier early once it
+    goes false (used by empty_build/empty_plant, whose eligibility --
+    structures/seed availability -- changes as the tier itself assigns).
+    """
+    while pending and candidates:
+        if continue_fn is not None and not continue_fn():
+            break
+        best = None
+        best_dist = None
+        for i, (idx, pos, inv) in enumerate(pending):
+            for j, t in enumerate(candidates):
+                d = abs(pos[0] - t[0]) + abs(pos[1] - t[1])
+                if best_dist is None or d < best_dist:
+                    best_dist = d
+                    best = (i, j)
+        i, j = best
+        idx, pos, inv = pending[i]
+        target = candidates[j]
+        actions[idx] = act_fn(idx, pos, inv, target)
+        del pending[i]
+        del candidates[j]
+
+
 def _plan_units(farm, private, board_size, day, info, config, prices, unit_targets=None):
     """Decide one action per unit (farmer + hands), consuming tiles from
     `info` so two units never chase the same tile in the same turn.
 
-    `unit_targets`, if given, is a {unit_idx: (task_key, target)} dict
-    mutated in place across calls (one call per turn) so a unit already
-    walking toward a target keeps heading there instead of re-running the
-    full priority ladder from scratch every turn. Without this, a unit
-    several tiles into a walk toward (say) a water target gets pulled onto
-    a newly-appeared, higher-priority-tier task the instant one shows up
-    anywhere on the board, abandoning the walk and starting a new one --
-    confirmed live via an action-type histogram showing ~74% of all
-    unit-turns were pure movement, essentially unchanged from the original
-    "76% movement" diagnosis despite later footprint-scaling fixes (see
-    docs/tests/LOG.md). Committing to a target once picked, rather than
-    re-litigating it every turn, is what actually brings that ratio down.
+    Two layers on top of the naive "each unit runs its own priority ladder,
+    grabbing whichever tile is nearest to itself" design:
+
+    1. `unit_targets`, if given, is a {unit_idx: (task_key, target)} dict
+       mutated in place across calls (one call per turn) so a unit already
+       walking toward a target keeps heading there instead of re-running
+       the full priority ladder from scratch every turn. Without this, a
+       unit several tiles into a walk toward (say) a water target gets
+       pulled onto a newly-appeared, higher-priority-tier task the instant
+       one shows up anywhere on the board, abandoning the walk and
+       starting a new one (see docs/tests/LOG.md).
+    2. Within each priority tier that draws from a shared, contested tile
+       list (feed/harvest/fertilize/collect_fertilizer/water/care/weeds/
+       empty_coop/empty_pasture/empty), assignment is a greedy *global*
+       nearest-pair match (`_assign_nearest`) across all still-unassigned
+       eligible units at once, not a fixed unit-processing-order sequential
+       grab. Instrumentation showed most unit-turns in the water tier were
+       pure travel (~90% not-yet-arrived) -- confirming forced long walks
+       from fixed processing order (farmer always resolved first regardless
+       of position) were a real cost, not just a theoretical one. Tiers
+       without shared contention (shed pickups, drop, pass) stay per-unit.
     """
     if unit_targets is None:
         unit_targets = {}
@@ -361,20 +405,31 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
     def inv_of(idx):
         return inventories[idx] if idx < len(inventories) else {}
 
-    # Target structure count scales with current labor so pasture capacity
-    # builds out roughly in step with hands instead of all at once or only
-    # once crop land runs out. Building itself is free (only the animal
-    # costs money), so there's no cash reason to delay it.
+    # Target structure count scales with current labor AND unlocked land so
+    # pasture capacity builds out in step with both instead of all at once,
+    # only once crop land runs out, or (the bug this quadrant factor fixes)
+    # frozen forever once the starting pasture count already meets a
+    # units-only target: with unit_count roughly constant for most of the
+    # game, a units-only formula never grows again after quadrant 1, so a
+    # 2nd/3rd quadrant's worth of new land never gets any pasture -- newly
+    # unlocked land unconditionally became crop tiles instead, confirmed
+    # live (pasture flat at its day-0 value the entire 29-day game across
+    # multiple matches) via replay review, see docs/tests/LOG.md. Building
+    # itself is free (only the animal costs money), so there's no cash
+    # reason to delay it.
+    n_quadrants = len(farm.get("unlocked_quadrants", ["NW"]))
     structures_committed = info["pasture_count"] + info["coop_count"]
     if config["season_days"] - day <= config["wind_down_days"]:
         target_structures = 0  # no time left for a new pasture to pay back
     else:
-        target_structures = min(config["max_structures"], math.ceil(len(units) * config["pasture_target_ratio"]))
+        target_structures = min(
+            config["max_structures"],
+            math.ceil(len(units) * config["pasture_target_ratio"] * n_quadrants),
+        )
 
-    farmer_action = ["PASS"]
-    hands_actions = []
+    actions = {}
 
-    def commit(idx, target, task_key, action):
+    def commit(idx, pos, target, task_key, action):
         # Called after every pick below: remember it if the unit hasn't
         # arrived yet (still walking, needs to survive to next turn),
         # forget it once acted on (nothing left to remember).
@@ -384,15 +439,10 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
             unit_targets[idx] = (task_key, target)
         return action
 
+    # --- Phase 1: sticky continuation, per unit (unchanged semantics) ---
+    pending = []
     for idx, pos in units:
         inv = inv_of(idx)
-        action = None
-        target = None
-
-        # Sticky short-circuit: if this unit was already walking toward a
-        # target last turn and that target is still valid (still present in
-        # this turn's freshly-scanned info list), keep heading there instead
-        # of re-running the whole priority ladder -- see docstring above.
         remembered = unit_targets.get(idx)
         if remembered is not None:
             task_key, remembered_target = remembered
@@ -400,6 +450,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
             if candidates is not None and remembered_target in candidates:
                 target = remembered_target
                 candidates.remove(target)
+                action = None
                 if task_key in STATIC_TASK_ACTIONS:
                     action = act_or_move(pos, target, STATIC_TASK_ACTIONS[task_key])
                 elif task_key == "empty_pasture_place":
@@ -428,130 +479,181 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
                             if seeds[best_crop] <= 0:
                                 crop_pool = [c for c in crop_pool if c != best_crop]
                             crop_counts[best_crop] = crop_counts.get(best_crop, 0) + 1
+                actions[idx] = action
                 if pos == target:
                     unit_targets.pop(idx, None)
                 else:
                     unit_targets[idx] = (task_key, target)
+                continue
             else:
                 unit_targets.pop(idx, None)
+        pending.append([idx, pos, inv])
 
-        if action is not None:
-            pass
-        elif inv.get("WHEAT", 0) > 0 and info["feed"]:
-            target = closest(pos, info["feed"])
-            action = commit(idx, target, "feed", act_or_move(pos, target, ["FEED"]))
-            info["feed"].remove(target)
-        elif info["harvest"]:
-            target = closest(pos, info["harvest"])
-            action = commit(idx, target, "harvest", act_or_move(pos, target, ["HARVEST"]))
-            info["harvest"].remove(target)
-        elif inv.get("FERTILIZER", 0) > 0 and info["fertilize"]:
-            target = closest(pos, info["fertilize"])
-            action = commit(idx, target, "fertilize", act_or_move(pos, target, ["FERTILIZE"]))
-            info["fertilize"].remove(target)
-        elif info["collect_fertilizer"]:
-            target = closest(pos, info["collect_fertilizer"])
-            action = commit(idx, target, "collect_fertilizer", act_or_move(pos, target, ["COLLECT_FERTILIZER"]))
-            info["collect_fertilizer"].remove(target)
-        elif info["water"]:
-            target = closest(pos, info["water"])
-            action = commit(idx, target, "water", act_or_move(pos, target, ["WATER"]))
-            info["water"].remove(target)
-        elif (
-            inv.get("WHEAT", 0) == 0
-            and info["feed"]
-            and shed.get("WHEAT", 0) > 0
-        ):
+    # --- Phase 2: batch tiers over shared, contested tile lists ---
+    def elig(pred):
+        return [u for u in pending if pred(u[2])]
+
+    _assign_nearest(
+        elig(lambda inv: inv.get("WHEAT", 0) > 0),
+        info["feed"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "feed", act_or_move(pos, t, ["FEED"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    _assign_nearest(
+        list(pending),
+        info["harvest"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "harvest", act_or_move(pos, t, ["HARVEST"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    _assign_nearest(
+        elig(lambda inv: inv.get("FERTILIZER", 0) > 0),
+        info["fertilize"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "fertilize", act_or_move(pos, t, ["FERTILIZE"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    _assign_nearest(
+        list(pending),
+        info["collect_fertilizer"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "collect_fertilizer", act_or_move(pos, t, ["COLLECT_FERTILIZER"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    _assign_nearest(
+        list(pending),
+        info["water"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "water", act_or_move(pos, t, ["WATER"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    # --- Shed pickups: no shared-resource contention (shed_spots aren't
+    # consumed), so per-unit is fine -- no benefit from batch matching. ---
+    still_pending = []
+    for idx, pos, inv in pending:
+        if inv.get("WHEAT", 0) == 0 and info["feed"] and shed.get("WHEAT", 0) > 0:
             target = closest(pos, shed_spots)
-            action = act_or_move(pos, target, ["PICKUP", "WHEAT", min(shed["WHEAT"], 10)])
-        elif (
-            inv.get("FERTILIZER", 0) == 0
-            and info["fertilize"]
-            and shed.get("FERTILIZER", 0) > 0
-        ):
+            actions[idx] = act_or_move(pos, target, ["PICKUP", "WHEAT", min(shed["WHEAT"], 10)])
+        elif inv.get("FERTILIZER", 0) == 0 and info["fertilize"] and shed.get("FERTILIZER", 0) > 0:
             target = closest(pos, shed_spots)
-            action = act_or_move(pos, target, ["PICKUP", "FERTILIZER", min(shed["FERTILIZER"], 10)])
-        elif config["enable_coop"] and inv.get("GOOSE", 0) > 0 and info["empty_coop"]:
-            target = closest(pos, info["empty_coop"])
-            action = commit(idx, target, "empty_coop_place", act_or_move(pos, target, ["PLACE", "GOOSE"]))
-            info["empty_coop"].remove(target)
-        elif config["animal_enabled"] and (inv.get("COW", 0) > 0 or inv.get("SHEEP", 0) > 0) and info["empty_pasture"]:
-            animal = "COW" if inv.get("COW", 0) > 0 else "SHEEP"
-            target = closest(pos, info["empty_pasture"])
-            action = commit(idx, target, "empty_pasture_place", act_or_move(pos, target, ["PLACE", animal]))
-            info["empty_pasture"].remove(target)
-        elif config["enable_coop"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
+            actions[idx] = act_or_move(pos, target, ["PICKUP", "FERTILIZER", min(shed["FERTILIZER"], 10)])
+        else:
+            still_pending.append([idx, pos, inv])
+    pending = still_pending
+
+    _assign_nearest(
+        elig(lambda inv: config["enable_coop"] and inv.get("GOOSE", 0) > 0),
+        info["empty_coop"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "empty_coop_place", act_or_move(pos, t, ["PLACE", "GOOSE"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    _assign_nearest(
+        elig(lambda inv: config["animal_enabled"] and (inv.get("COW", 0) > 0 or inv.get("SHEEP", 0) > 0)),
+        info["empty_pasture"],
+        lambda idx, pos, inv, t: commit(
+            idx, pos, t, "empty_pasture_place",
+            act_or_move(pos, t, ["PLACE", "COW" if inv.get("COW", 0) > 0 else "SHEEP"]),
+        ),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    still_pending = []
+    for idx, pos, inv in pending:
+        if config["enable_coop"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
             target = closest(pos, shed_spots)
-            action = act_or_move(pos, target, ["PICKUP", "GOOSE", 1])
-        elif (
-            config["animal_enabled"]
-            and info["empty_pasture"]
-            and (shed.get("COW", 0) > 0 or shed.get("SHEEP", 0) > 0)
-        ):
+            actions[idx] = act_or_move(pos, target, ["PICKUP", "GOOSE", 1])
+        elif config["animal_enabled"] and info["empty_pasture"] and (shed.get("COW", 0) > 0 or shed.get("SHEEP", 0) > 0):
             animal = "COW" if shed.get("COW", 0) > 0 else "SHEEP"
             target = closest(pos, shed_spots)
-            action = act_or_move(pos, target, ["PICKUP", animal, 1])
-        elif info["care"]:
-            target = closest(pos, info["care"])
-            action = commit(idx, target, "care", act_or_move(pos, target, ["CARE"]))
-            info["care"].remove(target)
-        elif info["weeds"]:
-            target = closest(pos, info["weeds"])
-            action = commit(idx, target, "weeds", act_or_move(pos, target, ["DIG"]))
-            info["weeds"].remove(target)
-        elif (
-            config["animal_enabled"]
-            and info["empty"]
-            and structures_committed < target_structures
-        ):
-            # Build pasture (or coop, if enabled) capacity in step with
-            # current labor. Ranked above planting: BUILD_PASTURE is free,
-            # so there's no cash trade-off, only a tile-allocation one, and
-            # the #1 player builds pastures on day 0 alongside its first
-            # crops rather than treating them as leftover-slack spending.
-            target = closest(pos, info["empty"])
-            if config["enable_coop"] and info["coop_count"] <= info["pasture_count"]:
-                build = "BUILD_COOP"
+            actions[idx] = act_or_move(pos, target, ["PICKUP", animal, 1])
+        else:
+            still_pending.append([idx, pos, inv])
+    pending = still_pending
+
+    _assign_nearest(
+        list(pending),
+        info["care"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "care", act_or_move(pos, t, ["CARE"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    _assign_nearest(
+        list(pending),
+        info["weeds"],
+        lambda idx, pos, inv, t: commit(idx, pos, t, "weeds", act_or_move(pos, t, ["DIG"])),
+        actions,
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    # Build pasture (or coop, if enabled) capacity in step with current
+    # labor. Ranked above planting: BUILD_PASTURE is free, so there's no
+    # cash trade-off, only a tile-allocation one.
+    def _build_act(idx, pos, inv, target):
+        nonlocal structures_committed
+        build = "BUILD_COOP" if config["enable_coop"] and info["coop_count"] <= info["pasture_count"] else "BUILD_PASTURE"
+        action = commit(idx, pos, target, "empty_build", act_or_move(pos, target, [build]))
+        # Count this tile toward the target immediately (not only once
+        # actually built) -- otherwise every unit still mid-walk this turn
+        # would see the same unmet target and all pile onto BUILD_PASTURE,
+        # overshooting it in a single turn.
+        structures_committed += 1
+        if pos == target:
+            if build == "BUILD_COOP":
+                info["coop_count"] += 1
             else:
-                build = "BUILD_PASTURE"
-            action = commit(idx, target, "empty_build", act_or_move(pos, target, [build]))
-            info["empty"].remove(target)
-            # Count this tile toward the target immediately (not only once
-            # actually built) -- otherwise every unit still mid-walk this
-            # turn would see the same unmet target and all pile onto
-            # BUILD_PASTURE, overshooting it in a single turn.
-            structures_committed += 1
-            if pos == target:
-                if build == "BUILD_COOP":
-                    info["coop_count"] += 1
-                else:
-                    info["pasture_count"] += 1
-        elif info["empty"] and (viable_crops := [c for c in crop_pool if season_ok.get(c, True)]):
-            target = closest(pos, info["empty"])
-            best_crop = max(
-                viable_crops,
-                key=lambda c: _diversified_crop_score(
-                    c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
-                ),
-            )
-            action = commit(idx, target, "empty_plant", act_or_move(pos, target, ["PLANT", best_crop]))
-            info["empty"].remove(target)
-            if pos == target:
-                seeds[best_crop] = seeds.get(best_crop, 0) - 1
-                if seeds[best_crop] <= 0:
-                    crop_pool = [c for c in crop_pool if c != best_crop]
-                crop_counts[best_crop] = crop_counts.get(best_crop, 0) + 1
-        elif inv:
+                info["pasture_count"] += 1
+        return action
+
+    if config["animal_enabled"]:
+        _assign_nearest(
+            list(pending), info["empty"], _build_act, actions,
+            continue_fn=lambda: structures_committed < target_structures,
+        )
+        pending = [u for u in pending if u[0] not in actions]
+
+    def _plant_act(idx, pos, inv, target):
+        nonlocal crop_pool
+        viable_crops = [c for c in crop_pool if season_ok.get(c, True)]
+        best_crop = max(
+            viable_crops,
+            key=lambda c: _diversified_crop_score(
+                c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
+            ),
+        )
+        action = commit(idx, pos, target, "empty_plant", act_or_move(pos, target, ["PLANT", best_crop]))
+        if pos == target:
+            seeds[best_crop] = seeds.get(best_crop, 0) - 1
+            if seeds[best_crop] <= 0:
+                crop_pool = [c for c in crop_pool if c != best_crop]
+            crop_counts[best_crop] = crop_counts.get(best_crop, 0) + 1
+        return action
+
+    _assign_nearest(
+        list(pending), info["empty"], _plant_act, actions,
+        continue_fn=lambda: any(season_ok.get(c, True) for c in crop_pool),
+    )
+    pending = [u for u in pending if u[0] not in actions]
+
+    # --- Fallback: drop off whatever's left, or PASS. ---
+    for idx, pos, inv in pending:
+        if inv:
             target = closest(pos, shed_spots)
-            action = act_or_move(pos, target, ["DROP"])
+            actions[idx] = act_or_move(pos, target, ["DROP"])
         else:
-            action = ["PASS"]
+            actions[idx] = ["PASS"]
 
-        if idx == 0:
-            farmer_action = action
-        else:
-            hands_actions.append(action)
-
+    farmer_action = actions.get(0, ["PASS"])
+    hands_actions = [actions[idx] for idx, _ in units[1:]]
     return farmer_action, hands_actions
 
 
@@ -598,7 +700,22 @@ def _opponent_incoming_supply(opponent_farm, board_size, day, lookahead_days):
 def _market_orders(farm, private, info, config, prices, day, opponent_supply=None):
     orders = []
     money = farm["money"]
-    reserve = config["money_reserve"]
+    # Optional "broke phase": scale every spending reserve/gate down for the
+    # first `broke_phase_days_frac` of the season, then back to normal --
+    # deliberately spend into the red early (hiring/land/animals) since only
+    # the final day's coin count is scored (docs/GAME_GUIDE.md: margin
+    # doesn't matter, only win/loss), matching the traced top opponents
+    # (kawa, prvsiyan), who are visibly near-broke through day 6-8 before
+    # exploding from day 10+. Disabled by default (frac=0, scale=1 -- no
+    # behavior change) since a flat "always aggressive" version of this
+    # already regressed across the pool (see docs/tests/LOG.md); this is
+    # narrower -- only the early phase gets cheaper, not the whole game.
+    phase_scale = (
+        config["broke_phase_reserve_scale"]
+        if day < config["season_days"] * config["broke_phase_days_frac"]
+        else 1.0
+    )
+    reserve = config["money_reserve"] * phase_scale
     shed = private.get("shed", {}) or {}
     seeds = private.get("seeds", {}) or {}
     started_up = day >= config["startup_days"]
@@ -691,7 +808,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         hire_cost = a
         if (
             backlog > unit_count * config["hire_backlog_ratio"]
-            and money - config["hire_money_floor"] >= hire_cost * config["hire_reserve_multiple"]
+            and money - config["hire_money_floor"] * phase_scale >= hire_cost * config["hire_reserve_multiple"] * phase_scale
         ):
             orders.append(["HIRE"])
 
@@ -718,7 +835,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             # built drains the day-0 cash pile that hiring/land also need.
             if (
                 len(info["empty_pasture"]) > pasture_pending
-                and money - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"]
+                and money - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * phase_scale
             ):
                 orders.append(["BUY_ANIMAL", best, 1])
 

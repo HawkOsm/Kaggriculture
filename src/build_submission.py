@@ -24,15 +24,58 @@ sys.path.insert(0, str(HERE))
 FARM_UTILS_FUNCS = ["step_toward", "closest", "act_or_move", "shed_tiles"]
 ROBUST_AGENT_FUNCS = [
     "_crop_cycle_days", "_crop_score", "_diversified_crop_score", "_animal_score",
-    "_base_price", "_plant_harvest_ready", "_scan_farm", "_plan_units",
+    "_base_price", "_plant_harvest_ready", "_scan_farm", "_assign_nearest", "_plan_units",
     "_carried_total", "_opponent_incoming_supply", "_dynamic_sell_fraction", "_market_orders",
 ]
 # Module-level dicts _plan_units depends on (not `def`s, so _extract_funcs
-# below can't see them -- a static call-graph check only walks function
-# bodies for Name/Call references, so a missing top-level constant like this
-# went undetected once already, see docs/tests/LOG.md's build_submission.py
-# entry). Keep in sync by hand if _plan_units grows another one.
+# below can't see them). _check_completeness below catches a name missing
+# from either list automatically now -- this bug class (a new helper added
+# to agent.py but not added here, silently dropped from the built
+# submission, NameError swallowed into a PASS-every-turn fallback) has
+# already happened twice by hand (_dynamic_sell_fraction, then
+# _assign_nearest; see docs/tests/LOG.md).
 ROBUST_AGENT_CONSTANTS = ["STATIC_TASK_ACTIONS", "TASK_INFO_KEY"]
+
+
+def _check_completeness(path, func_names, assign_names):
+    """Every module-level name referenced (as a call or a bare reference)
+    inside the extracted functions/constants must itself be included --
+    otherwise the built submission silently NameErrors into SAFE_FALLBACK
+    every turn (see the comment on ROBUST_AGENT_CONSTANTS above)."""
+    source = path.read_text()
+    tree = ast.parse(source)
+
+    top_level = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            top_level.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    top_level.add(t.id)
+
+    included = set(func_names) | set(assign_names)
+    missing = set()
+    for node in tree.body:
+        is_included_func = isinstance(node, ast.FunctionDef) and node.name in func_names
+        is_included_assign = (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in assign_names
+        )
+        if not (is_included_func or is_included_assign):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                if sub.id in top_level and sub.id not in included:
+                    missing.add(sub.id)
+    if missing:
+        raise RuntimeError(
+            f"{path}: build_submission.py's extraction list is missing {sorted(missing)}, "
+            f"referenced by {sorted(func_names)}/{sorted(assign_names)} -- add them to "
+            f"ROBUST_AGENT_FUNCS or ROBUST_AGENT_CONSTANTS"
+        )
 
 
 def _extract_funcs(path, names):
@@ -69,6 +112,8 @@ def build():
     tuned = json.loads(best_config_path.read_text()) if best_config_path.exists() else {}
     config = dict(DEFAULT_CONFIG)
     config.update(tuned)
+
+    _check_completeness(HERE / "agent.py", ROBUST_AGENT_FUNCS, ROBUST_AGENT_CONSTANTS)
 
     farm_utils_src = "\n\n\n".join(_extract_funcs(HERE / "farm_utils.py", FARM_UTILS_FUNCS))
     robust_agent_constants_src = "\n".join(_extract_assigns(HERE / "agent.py", ROBUST_AGENT_CONSTANTS))

@@ -133,7 +133,15 @@ def sample_config(trial):
         "buy_fertilizer": trial.suggest_categorical("buy_fertilizer", [True, False]),
         "hire_backlog_ratio": trial.suggest_float("hire_backlog_ratio", 0.3, 4.0),
         "diversification_weight": trial.suggest_float("diversification_weight", 0.0, 1.0),
-        "opponent_awareness_enabled": trial.suggest_categorical("opponent_awareness_enabled", [True, False]),
+        # Always on, not searched: selling into a still-healthy price before
+        # the opponent's incoming supply craters it is a real signal we can
+        # see (their public tiles), not a guess -- there's no game-theoretic
+        # downside to using it, only a threshold/discount to tune. Left as
+        # a togglable bool, a noisy 2-episode trial can (and did -- the
+        # search that produced the current best_config.json turned it off)
+        # mistake variance for a real signal and disable a strictly-useful
+        # feature. See docs/tests/LOG.md.
+        "opponent_awareness_enabled": True,
         "opponent_incoming_threshold": trial.suggest_int("opponent_incoming_threshold", 1, 10),
         "opponent_race_discount": trial.suggest_float("opponent_race_discount", 0.3, 1.0),
         "opponent_lookahead_days": trial.suggest_int("opponent_lookahead_days", 0, 5),
