@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 replay.json
 kaggriculture-data/
-output/games
+output/
 .claude/
 .vscode/
 v27_agents
