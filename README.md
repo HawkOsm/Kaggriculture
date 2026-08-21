@@ -22,11 +22,10 @@ and compete head-to-head on a live leaderboard. $50,000 prize pool (10 × $5,000
 - [`../src/`](../src/) — the actual agent code (not under `docs/`):
   - `farm_utils.py` — shared movement/geometry helpers (`step_toward`, `closest`, `act_or_move`,
     `shed_tiles`) used by our own agents.
-  - `quick_start_agent.py` — minimal wheat-loop agent from the competition Overview page.
-  - `melon_maxxer.py` — verbatim copy of the official tutorial notebook's example agent.
-  - `multi_crop.py` — our first iteration: grows a rotation of crops instead of melon-only.
-  - `robust_agent.py` — our current best agent: crash-safe, multi-unit (farmer + hands), dynamic
-    crop scoring, hires/land/animals/fertilizing all wired up.
+  - `agent.py` — our current best agent (exported as `robust_agent`): crash-safe, multi-unit
+    (farmer + hands), dynamic crop scoring, hires/land/animals/fertilizing all wired up.
+  - `opponents/` — local benchmark opponents pulled from public Kaggle notebooks (see
+    [`../CREDITS.md`](../CREDITS.md) for attribution) — never part of our own submission.
   - `run_match.py` — CLI to run any two agents against each other locally, with an optional HTML replay.
 
 ## Quick Start
@@ -38,7 +37,7 @@ pip install -U kaggle-environments kaggle
 From the repo root:
 
 ```bash
-python src/run_match.py robust_agent:robust_agent melon_maxxer:melon_maxxer
+python src/run_match.py agent:robust_agent kawa_route_agent:kawa_route_agent
 ```
 
 See [`starter_kit/README.md`](starter_kit/README.md) for the full local-test-and-submit workflow

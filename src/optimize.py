@@ -1,13 +1,14 @@
-"""Local Optuna search over robust_agent.DEFAULT_CONFIG.
+"""Local Optuna search over agent.DEFAULT_CONFIG.
 
 Frames tuning as beating a reigning champion instead of chasing a raw reward
 number: each trial's candidate config plays a fixed opponent pool --
-melon_maxxer, multi_crop, and the current champion config (loaded from
-best_config.json, or DEFAULT_CONFIG on the very first run) -- and is scored
-by average reward *margin* (candidate - opponent), not raw reward. That's
-what "steady progression" means here: every run of this script tries to beat
-whatever the previous run's winner was, so best_config.json only moves
-forward.
+default is the five pulled-from-Kaggle 2500+ opponents (kawa, boatlee_v16,
+rayk_c95, saiteja, kaito -- see CREDITS.md) plus the current champion config
+(loaded from best_config.json, or DEFAULT_CONFIG on the very first run) --
+and is scored by average reward *margin* (candidate - opponent), not raw
+reward. That's what "steady progression" means here: every run of this
+script tries to beat whatever the previous run's winner was, so
+best_config.json only moves forward.
 
 Because episodes aren't seeded, a single episode is noisy -- each trial
 plays --episodes-per-opponent episodes against every opponent (both seat
@@ -17,7 +18,7 @@ the pack after just 1-2 episodes instead of burning the full budget on it.
 
 Usage:
     python optimize.py --n-trials 200 --n-jobs 8
-    python optimize.py --n-trials 50 --n-jobs 1 --opponents melon_maxxer,random
+    python optimize.py --n-trials 50 --n-jobs 1 --opponents kawa,random
 
 Resumable: reruns with the same --study-name/--storage continue the same
 Optuna study instead of starting over.
@@ -40,9 +41,40 @@ import optuna
 
 from kaggle_environments import make as make_env
 
-from robust_agent import DEFAULT_CONFIG, make_agent
-from melon_maxxer import melon_maxxer
-from multi_crop import multi_crop
+from agent import DEFAULT_CONFIG, make_agent
+from kawa_route_agent import kawa_route_agent
+from boatlee_v16_agent import boatlee_v16_agent
+from rayk_c95_agent import rayk_c95_agent
+from saiteja_agent import saiteja_agent
+from kaito_agent import kaito_agent
+from tran_hh_agent import tran_hh_agent
+from pilkwang_agent import pilkwang_agent
+from romanrozen_agent import romanrozen_agent
+from prvsiyan_frontier_agent import prvsiyan_frontier_agent
+
+# Real opponent agents, keyed by the name used in --opponents. "champion" is
+# handled separately (built fresh from champion_config each call, not fixed).
+OPPONENT_REGISTRY = {
+    "kawa": kawa_route_agent,
+    "boatlee_v16": boatlee_v16_agent,
+    "rayk_c95": rayk_c95_agent,
+    "saiteja": saiteja_agent,
+    "kaito": kaito_agent,
+    "tran_hh": tran_hh_agent,
+    "pilkwang": pilkwang_agent,
+    "romanrozen": romanrozen_agent,
+    "prvsiyan_frontier": prvsiyan_frontier_agent,
+    "random": "random",
+    "pass": "pass",
+    "starter": "starter",
+}
+
+
+def _resolve_agent(name):
+    if name not in OPPONENT_REGISTRY:
+        raise ValueError(f"unknown opponent {name!r}; choose from {sorted(OPPONENT_REGISTRY)} or 'champion'")
+    return OPPONENT_REGISTRY[name]
+
 
 REPO_ROOT = HERE.parent
 BEST_CONFIG_PATH = HERE / "best_config.json"
@@ -56,8 +88,6 @@ DEFAULT_STORAGE = f"sqlite:///{OPTUNA_DIR / 'optuna_study.db'}"
 # so this points at a fresh study rather than silently mixing histories.
 DEFAULT_STUDY_NAME = "robust_agent_config_v2_scaling"
 
-BUILTIN_AGENTS = {"random": "random", "pass": "pass", "starter": "starter",
-                  "melon_maxxer": melon_maxxer, "multi_crop": multi_crop}
 
 CROP_PROFILES = {
     # Broad exposure to avoid single-commodity collapse.
@@ -125,12 +155,6 @@ def _resolve_search_config(params):
     return cfg
 
 
-def _resolve_agent(name):
-    if name in BUILTIN_AGENTS:
-        return BUILTIN_AGENTS[name]
-    raise ValueError(f"unknown opponent {name!r}; choose from {sorted(BUILTIN_AGENTS)}")
-
-
 def play_episode(agent_a, agent_b, episode_steps=720):
     env = make_env("kaggriculture", configuration={"episodeSteps": episode_steps}, debug=True)
     env.run([agent_a, agent_b])
@@ -153,7 +177,7 @@ def evaluate_config(config, opponent_names, episodes_per_opponent, champion_conf
     candidate = make_agent(config)
     opponents = []
     for name in opponent_names:
-        opponents.append((name, _resolve_agent(name) if name != "champion" else make_agent(champion_config)))
+        opponents.append((name, make_agent(champion_config) if name == "champion" else _resolve_agent(name)))
 
     margins = []
     step = 0
@@ -272,8 +296,11 @@ def main():
     parser.add_argument("--n-trials", type=int, default=100, help="total trials across all workers")
     parser.add_argument("--n-jobs", type=int, default=max(1, min(8, (os.cpu_count() or 4) - 2)))
     parser.add_argument("--episodes-per-opponent", type=int, default=2, help="must be even for balanced seating")
-    parser.add_argument("--opponents", default="melon_maxxer,multi_crop,champion",
-                         help="comma-separated: melon_maxxer, multi_crop, random, pass, starter, champion")
+    parser.add_argument(
+        "--opponents",
+        default="kawa,boatlee_v16,rayk_c95,saiteja,kaito,tran_hh,pilkwang,romanrozen,prvsiyan_frontier,champion",
+        help=f"comma-separated: {sorted(OPPONENT_REGISTRY)} or champion",
+    )
     parser.add_argument("--study-name", default=DEFAULT_STUDY_NAME)
     parser.add_argument("--storage", default=DEFAULT_STORAGE)
     parser.add_argument("--timeout", type=int, default=None, help="wall-clock budget in seconds, across all workers")
@@ -358,7 +385,7 @@ def main():
 
     # Promotion gate is this dedicated head-to-head, not the search's own
     # trial value -- that value came from a 6-episode mixed-opponent-pool
-    # average (melon_maxxer + multi_crop + champion combined), which can
+    # average (the full opponent pool + champion combined), which can
     # look positive even if the candidate barely edges or loses to the
     # champion specifically. Require strictly more wins than losses.
     promoted = wins > losses

@@ -1,4 +1,4 @@
-"""RL training for the robust_agent policy hook (see robust_agent.KNOB_SPECS
+"""RL training for the agent.py policy hook (see agent.KNOB_SPECS
 / make_agent(policy_fn=...)).
 
 Architecture (see docs/tests/LOG.md for why this shape specifically):
@@ -49,7 +49,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "opponents"))
 
-from robust_agent import (
+from agent import (
     DEFAULT_CONFIG,
     SAFE_FALLBACK,
     _market_orders,
@@ -84,12 +84,21 @@ MAX_GRAD_NORM = 0.5
 # reduce that cumulative drift per epoch.
 LR = 5e-5
 
-OPPONENT_POOL = ["champion", "self", "melon_maxxer", "multi_crop"]
-OPPONENT_WEIGHTS = [0.4, 0.4, 0.1, 0.1]
+# "champion"/"self" keep training anchored to our own best config and
+# self-play; the other nine are the pulled-from-Kaggle 2500+ opponents (see
+# CREDITS.md) -- added after best.pt (trained only against champion/self/
+# melon_maxxer/multi_crop) lost 0W-6L to kawa_route_agent alone, confirming
+# the old pool never exposed training to anything close to real leaderboard
+# difficulty (see docs/tests/LOG.md).
+OPPONENT_POOL = [
+    "champion", "self", "kawa", "boatlee_v16", "rayk_c95", "saiteja", "kaito",
+    "tran_hh", "pilkwang", "romanrozen", "prvsiyan_frontier",
+]
+OPPONENT_WEIGHTS = [0.15, 0.09, 0.09, 0.08, 0.08, 0.08, 0.08, 0.09, 0.08, 0.08, 0.10]
 
 
 # --------------------------------------------------------------------------
-# Training-time agent: same mechanical layer as robust_agent.make_agent,
+# Training-time agent: same mechanical layer as agent.make_agent,
 # but records one transition per in-game day for PPO instead of just
 # applying config overrides.
 # --------------------------------------------------------------------------
@@ -98,7 +107,7 @@ def make_training_agent(net, base_cfg, transitions, deterministic=False):
     """transitions: list appended to in place, one dict per in-game day:
     {features, action, log_prob, value, reward}. `reward` for day D is
     filled in when day D+1 starts (or via finalize() at episode end)."""
-    state = {"last_day": None, "day_money": 0.0, "cfg": dict(base_cfg)}
+    state = {"last_day": None, "day_money": 0.0, "opp_day_money": 0.0, "cfg": dict(base_cfg), "unit_targets": {}}
 
     def agent(obs):
         try:
@@ -113,12 +122,23 @@ def make_training_agent(net, base_cfg, transitions, deterministic=False):
             board_size = len(farm["tiles"])
             prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
             money = farm.get("money", 0.0)
+            opp_money = opponent_farm.get("money", 0.0) if opponent_farm is not None else state["opp_day_money"]
 
             if day != state["last_day"]:
                 if state["last_day"] is not None and transitions and transitions[-1]["reward"] is None:
-                    transitions[-1]["reward"] = (money - state["day_money"]) / REWARD_SCALE
+                    # Margin-delta, not absolute own-money delta: the
+                    # competition's Elo-like ranking only scores win/loss
+                    # (see docs/GAME_GUIDE.md -- coin margin at game end
+                    # doesn't even matter there, only who has more), so a
+                    # day where we grow $500 while the opponent grows $2000
+                    # should read as a bad day, not a good one. Still dense
+                    # (every day, not just game-end) for credit assignment.
+                    our_delta = money - state["day_money"]
+                    opp_delta = opp_money - state["opp_day_money"]
+                    transitions[-1]["reward"] = (our_delta - opp_delta) / REWARD_SCALE
                 state["last_day"] = day
                 state["day_money"] = money
+                state["opp_day_money"] = opp_money
                 features = extract_features(obs, base_cfg)
                 action, log_prob, value = net.act(
                     torch.tensor(features, dtype=torch.float32), deterministic=deterministic
@@ -141,15 +161,19 @@ def make_training_agent(net, base_cfg, transitions, deterministic=False):
                 opponent_farm, board_size, day, turn_cfg["opponent_lookahead_days"]
             )
             market_orders = _market_orders(farm, private, info, turn_cfg, prices, day, opponent_supply)
-            farmer_action, hands_actions = _plan_units(farm, private, board_size, day, info, turn_cfg, prices)
+            farmer_action, hands_actions = _plan_units(
+                farm, private, board_size, day, info, turn_cfg, prices, state["unit_targets"]
+            )
             return {"farmer": farmer_action, "hands": hands_actions, "market": market_orders}
         except Exception as exc:  # noqa: BLE001
             print(f"train_rl agent: swallowed exception: {exc!r}", file=sys.stderr)
             return dict(SAFE_FALLBACK)
 
-    def finalize(final_money):
+    def finalize(final_money, opp_final_money):
         if transitions and transitions[-1]["reward"] is None:
-            transitions[-1]["reward"] = (final_money - state["day_money"]) / REWARD_SCALE
+            our_delta = final_money - state["day_money"]
+            opp_delta = opp_final_money - state["opp_day_money"]
+            transitions[-1]["reward"] = (our_delta - opp_delta) / REWARD_SCALE
 
     return agent, finalize
 
@@ -157,15 +181,36 @@ def make_training_agent(net, base_cfg, transitions, deterministic=False):
 def _build_opponent(spec, champion_config, net, base_cfg):
     if spec == "champion":
         return make_agent(champion_config)
-    if spec == "melon_maxxer":
-        from melon_maxxer import melon_maxxer
-        return melon_maxxer
-    if spec == "multi_crop":
-        from multi_crop import multi_crop
-        return multi_crop
     if spec == "self":
         agent, _ = make_training_agent(net, base_cfg, [], deterministic=False)
         return agent
+    if spec == "kawa":
+        from kawa_route_agent import kawa_route_agent
+        return kawa_route_agent
+    if spec == "boatlee_v16":
+        from boatlee_v16_agent import boatlee_v16_agent
+        return boatlee_v16_agent
+    if spec == "rayk_c95":
+        from rayk_c95_agent import rayk_c95_agent
+        return rayk_c95_agent
+    if spec == "saiteja":
+        from saiteja_agent import saiteja_agent
+        return saiteja_agent
+    if spec == "kaito":
+        from kaito_agent import kaito_agent
+        return kaito_agent
+    if spec == "tran_hh":
+        from tran_hh_agent import tran_hh_agent
+        return tran_hh_agent
+    if spec == "pilkwang":
+        from pilkwang_agent import pilkwang_agent
+        return pilkwang_agent
+    if spec == "romanrozen":
+        from romanrozen_agent import romanrozen_agent
+        return romanrozen_agent
+    if spec == "prvsiyan_frontier":
+        from prvsiyan_frontier_agent import prvsiyan_frontier_agent
+        return prvsiyan_frontier_agent
     raise ValueError(f"unknown opponent spec {spec!r}")
 
 
@@ -201,8 +246,9 @@ def rollout_worker(payload):
             idx = 1
         final = env.steps[-1]
         final_money = final[idx].reward or 0.0
-        margin = (final[idx].reward or 0.0) - (final[1 - idx].reward or 0.0)
-        finalize(final_money)
+        opp_final_money = final[1 - idx].reward or 0.0
+        margin = final_money - opp_final_money
+        finalize(final_money, opp_final_money)
 
         if transitions and all(t["reward"] is not None for t in transitions):
             episodes.append({"transitions": transitions, "margin": margin, "opponent": opponent_spec})

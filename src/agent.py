@@ -308,9 +308,39 @@ def _scan_farm(farm, board_size, day):
 # from farm_utils.py for the actual movement mechanics).
 # --------------------------------------------------------------------------
 
-def _plan_units(farm, private, board_size, day, info, config, prices):
+STATIC_TASK_ACTIONS = {
+    "feed": ["FEED"], "harvest": ["HARVEST"], "fertilize": ["FERTILIZE"],
+    "collect_fertilizer": ["COLLECT_FERTILIZER"], "water": ["WATER"],
+    "care": ["CARE"], "weeds": ["DIG"], "empty_coop_place": ["PLACE", "GOOSE"],
+}
+TASK_INFO_KEY = {
+    "feed": "feed", "harvest": "harvest", "fertilize": "fertilize",
+    "collect_fertilizer": "collect_fertilizer", "water": "water", "care": "care",
+    "weeds": "weeds", "empty_coop_place": "empty_coop", "empty_pasture_place": "empty_pasture",
+    "empty_build": "empty", "empty_plant": "empty",
+}
+
+
+def _plan_units(farm, private, board_size, day, info, config, prices, unit_targets=None):
     """Decide one action per unit (farmer + hands), consuming tiles from
-    `info` so two units never chase the same tile in the same turn."""
+    `info` so two units never chase the same tile in the same turn.
+
+    `unit_targets`, if given, is a {unit_idx: (task_key, target)} dict
+    mutated in place across calls (one call per turn) so a unit already
+    walking toward a target keeps heading there instead of re-running the
+    full priority ladder from scratch every turn. Without this, a unit
+    several tiles into a walk toward (say) a water target gets pulled onto
+    a newly-appeared, higher-priority-tier task the instant one shows up
+    anywhere on the board, abandoning the walk and starting a new one --
+    confirmed live via an action-type histogram showing ~74% of all
+    unit-turns were pure movement, essentially unchanged from the original
+    "76% movement" diagnosis despite later footprint-scaling fixes (see
+    docs/tests/LOG.md). Committing to a target once picked, rather than
+    re-litigating it every turn, is what actually brings that ratio down.
+    """
+    if unit_targets is None:
+        unit_targets = {}
+
     units = [(0, tuple(farm["farmer"]))]
     for i, pos in enumerate(farm.get("hands", []) or []):
         units.append((i + 1, tuple(pos)))
@@ -344,30 +374,88 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
     farmer_action = ["PASS"]
     hands_actions = []
 
+    def commit(idx, target, task_key, action):
+        # Called after every pick below: remember it if the unit hasn't
+        # arrived yet (still walking, needs to survive to next turn),
+        # forget it once acted on (nothing left to remember).
+        if pos == target:
+            unit_targets.pop(idx, None)
+        else:
+            unit_targets[idx] = (task_key, target)
+        return action
+
     for idx, pos in units:
         inv = inv_of(idx)
         action = None
         target = None
 
-        if inv.get("WHEAT", 0) > 0 and info["feed"]:
+        # Sticky short-circuit: if this unit was already walking toward a
+        # target last turn and that target is still valid (still present in
+        # this turn's freshly-scanned info list), keep heading there instead
+        # of re-running the whole priority ladder -- see docstring above.
+        remembered = unit_targets.get(idx)
+        if remembered is not None:
+            task_key, remembered_target = remembered
+            candidates = info.get(TASK_INFO_KEY.get(task_key, ""))
+            if candidates is not None and remembered_target in candidates:
+                target = remembered_target
+                candidates.remove(target)
+                if task_key in STATIC_TASK_ACTIONS:
+                    action = act_or_move(pos, target, STATIC_TASK_ACTIONS[task_key])
+                elif task_key == "empty_pasture_place":
+                    animal = "COW" if inv.get("COW", 0) > 0 else "SHEEP"
+                    action = act_or_move(pos, target, ["PLACE", animal])
+                elif task_key == "empty_build":
+                    build = "BUILD_COOP" if config["enable_coop"] and info["coop_count"] <= info["pasture_count"] else "BUILD_PASTURE"
+                    action = act_or_move(pos, target, [build])
+                    if pos == target:
+                        if build == "BUILD_COOP":
+                            info["coop_count"] += 1
+                        else:
+                            info["pasture_count"] += 1
+                elif task_key == "empty_plant":
+                    viable_crops = [c for c in crop_pool if season_ok.get(c, True)]
+                    best_crop = max(
+                        viable_crops,
+                        key=lambda c: _diversified_crop_score(
+                            c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
+                        ),
+                    ) if viable_crops else None
+                    if best_crop is not None:
+                        action = act_or_move(pos, target, ["PLANT", best_crop])
+                        if pos == target:
+                            seeds[best_crop] = seeds.get(best_crop, 0) - 1
+                            if seeds[best_crop] <= 0:
+                                crop_pool = [c for c in crop_pool if c != best_crop]
+                            crop_counts[best_crop] = crop_counts.get(best_crop, 0) + 1
+                if pos == target:
+                    unit_targets.pop(idx, None)
+                else:
+                    unit_targets[idx] = (task_key, target)
+            else:
+                unit_targets.pop(idx, None)
+
+        if action is not None:
+            pass
+        elif inv.get("WHEAT", 0) > 0 and info["feed"]:
             target = closest(pos, info["feed"])
-            action = act_or_move(pos, target, ["FEED"])
+            action = commit(idx, target, "feed", act_or_move(pos, target, ["FEED"]))
             info["feed"].remove(target)
         elif info["harvest"]:
             target = closest(pos, info["harvest"])
-            action = act_or_move(pos, target, ["HARVEST"])
+            action = commit(idx, target, "harvest", act_or_move(pos, target, ["HARVEST"]))
             info["harvest"].remove(target)
         elif inv.get("FERTILIZER", 0) > 0 and info["fertilize"]:
             target = closest(pos, info["fertilize"])
-            action = act_or_move(pos, target, ["FERTILIZE"])
+            action = commit(idx, target, "fertilize", act_or_move(pos, target, ["FERTILIZE"]))
             info["fertilize"].remove(target)
         elif info["collect_fertilizer"]:
             target = closest(pos, info["collect_fertilizer"])
-            action = act_or_move(pos, target, ["COLLECT_FERTILIZER"])
+            action = commit(idx, target, "collect_fertilizer", act_or_move(pos, target, ["COLLECT_FERTILIZER"]))
             info["collect_fertilizer"].remove(target)
         elif info["water"]:
             target = closest(pos, info["water"])
-            action = act_or_move(pos, target, ["WATER"])
+            action = commit(idx, target, "water", act_or_move(pos, target, ["WATER"]))
             info["water"].remove(target)
         elif (
             inv.get("WHEAT", 0) == 0
@@ -385,12 +473,12 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
             action = act_or_move(pos, target, ["PICKUP", "FERTILIZER", min(shed["FERTILIZER"], 10)])
         elif config["enable_coop"] and inv.get("GOOSE", 0) > 0 and info["empty_coop"]:
             target = closest(pos, info["empty_coop"])
-            action = act_or_move(pos, target, ["PLACE", "GOOSE"])
+            action = commit(idx, target, "empty_coop_place", act_or_move(pos, target, ["PLACE", "GOOSE"]))
             info["empty_coop"].remove(target)
         elif config["animal_enabled"] and (inv.get("COW", 0) > 0 or inv.get("SHEEP", 0) > 0) and info["empty_pasture"]:
             animal = "COW" if inv.get("COW", 0) > 0 else "SHEEP"
             target = closest(pos, info["empty_pasture"])
-            action = act_or_move(pos, target, ["PLACE", animal])
+            action = commit(idx, target, "empty_pasture_place", act_or_move(pos, target, ["PLACE", animal]))
             info["empty_pasture"].remove(target)
         elif config["enable_coop"] and info["empty_coop"] and shed.get("GOOSE", 0) > 0:
             target = closest(pos, shed_spots)
@@ -405,11 +493,11 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
             action = act_or_move(pos, target, ["PICKUP", animal, 1])
         elif info["care"]:
             target = closest(pos, info["care"])
-            action = act_or_move(pos, target, ["CARE"])
+            action = commit(idx, target, "care", act_or_move(pos, target, ["CARE"]))
             info["care"].remove(target)
         elif info["weeds"]:
             target = closest(pos, info["weeds"])
-            action = act_or_move(pos, target, ["DIG"])
+            action = commit(idx, target, "weeds", act_or_move(pos, target, ["DIG"]))
             info["weeds"].remove(target)
         elif (
             config["animal_enabled"]
@@ -426,7 +514,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
                 build = "BUILD_COOP"
             else:
                 build = "BUILD_PASTURE"
-            action = act_or_move(pos, target, [build])
+            action = commit(idx, target, "empty_build", act_or_move(pos, target, [build]))
             info["empty"].remove(target)
             # Count this tile toward the target immediately (not only once
             # actually built) -- otherwise every unit still mid-walk this
@@ -446,7 +534,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices):
                     c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
                 ),
             )
-            action = act_or_move(pos, target, ["PLANT", best_crop])
+            action = commit(idx, target, "empty_plant", act_or_move(pos, target, ["PLANT", best_crop]))
             info["empty"].remove(target)
             if pos == target:
                 seeds[best_crop] = seeds.get(best_crop, 0) - 1
@@ -692,6 +780,14 @@ FEATURE_NAMES = [
     "wheat_price", "carrot_price", "tomato_price", "strawberry_price", "melon_price",
     "egg_price", "milk_price", "wool_price",
 ]
+# Deliberately separate from config["cash_scale"] (which normalizes OUR OWN
+# sell-aggressiveness in _dynamic_sell_fraction, tuned around a few thousand)
+# -- reusing it here saturated cash_frac/opp_cash_frac at 1.0 well before
+# day 10 against real strong opponents (kawa reaches ~$15k by day 12, $150k+
+# by day 29), making the RL policy unable to tell "modestly ahead/behind"
+# from "astronomically ahead/behind" for most of any competitive game. See
+# docs/tests/LOG.md.
+RL_MONEY_SCALE = 50000.0
 
 
 def extract_features(obs, cfg):
@@ -705,7 +801,6 @@ def extract_features(obs, cfg):
     opponent_farm = next((f for i, f in enumerate(farms) if i != player), None)
     day = obs.get("day", 0)
     season_days = max(1, cfg["season_days"])
-    cash_scale = max(1.0, cfg["cash_scale"])
     prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
 
     board_size = len(farm["tiles"])
@@ -728,8 +823,8 @@ def extract_features(obs, cfg):
     return [
         day / season_days,
         max(0.0, season_days - day) / season_days,
-        min(1.0, farm.get("money", 0.0) / cash_scale),
-        min(1.0, opp_money / cash_scale),
+        min(1.0, farm.get("money", 0.0) / RL_MONEY_SCALE),
+        min(1.0, opp_money / RL_MONEY_SCALE),
         land_frac,
         occupancy,
         min(1.0, unit_count / 13.0),
@@ -766,7 +861,7 @@ def make_agent(config=None, policy_fn=None):
     cfg = dict(DEFAULT_CONFIG)
     if config:
         cfg.update(config)
-    state = {"last_day": None}
+    state = {"last_day": None, "unit_targets": {}}
 
     def agent(obs):
         try:
@@ -797,7 +892,9 @@ def make_agent(config=None, policy_fn=None):
             info = _scan_farm(farm, board_size, day)
             opponent_supply = _opponent_incoming_supply(opponent_farm, board_size, day, turn_cfg["opponent_lookahead_days"])
             market_orders = _market_orders(farm, private, info, turn_cfg, prices, day, opponent_supply)
-            farmer_action, hands_actions = _plan_units(farm, private, board_size, day, info, turn_cfg, prices)
+            farmer_action, hands_actions = _plan_units(
+                farm, private, board_size, day, info, turn_cfg, prices, state["unit_targets"]
+            )
 
             return {"farmer": farmer_action, "hands": hands_actions, "market": market_orders}
         except Exception as exc:  # noqa: BLE001 -- deliberate catch-all safety net

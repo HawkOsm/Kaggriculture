@@ -1,8 +1,8 @@
 """Actor-critic network for the RL policy layer (see train_rl.py).
 
-The policy only ever outputs KNOB_SPECS-shaped values (see robust_agent.py)
+The policy only ever outputs KNOB_SPECS-shaped values (see agent.py)
 once per in-game day -- everything mechanical (movement, task priority,
-harvesting) stays the proven rule-based code in robust_agent.py untouched.
+harvesting) stays the proven rule-based code in agent.py untouched.
 This network is deliberately larger than the ~12-dimensional control problem
 strictly needs; see docs/tests/LOG.md for why (GPU utilization target on an
 8-hour unattended training run).
@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from robust_agent import FEATURE_NAMES, KNOB_SPECS
+from agent import FEATURE_NAMES, KNOB_SPECS
 
 STATE_DIM = len(FEATURE_NAMES)
 ACTION_DIM = len(KNOB_SPECS)

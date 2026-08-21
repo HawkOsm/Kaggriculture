@@ -15,7 +15,7 @@ agent function from a .py file in this directory, e.g.:
     python run_match.py submission/main.py melon_maxxer:melon_maxxer
 
 Benchmark opponents (melon_maxxer, multi_crop, quick_start_agent, kawa_route_agent)
-live in opponents/, kept separate from this repo's own agent code (robust_agent.py
+live in opponents/, kept separate from this repo's own agent code (agent.py
 etc.) directly in src/.
 
 Every run saves a result.json + replay.html + a best_config.json snapshot into
