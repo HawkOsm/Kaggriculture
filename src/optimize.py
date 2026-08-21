@@ -32,7 +32,9 @@ import statistics
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE / "opponents"))
 
 import optuna
 
@@ -42,11 +44,12 @@ from robust_agent import DEFAULT_CONFIG, make_agent
 from melon_maxxer import melon_maxxer
 from multi_crop import multi_crop
 
-HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 BEST_CONFIG_PATH = HERE / "best_config.json"
 LOG_PATH = REPO_ROOT / "docs" / "tests" / "LOG.md"
-DEFAULT_STORAGE = f"sqlite:///{HERE / 'optuna_study.db'}"
+OPTUNA_DIR = REPO_ROOT / "output" / "optuna"
+OPTUNA_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_STORAGE = f"sqlite:///{OPTUNA_DIR / 'optuna_study.db'}"
 # Renamed when the search space changed for the scaling-strategy redesign
 # (see docs/tests/LOG.md) -- old trials used a different, now-incompatible
 # set of config keys (structure_money_threshold, no hire_money_floor, etc.),
@@ -74,7 +77,15 @@ def load_champion_config():
 
 def sample_config(trial):
     return {
-        "sell_fraction": trial.suggest_float("sell_fraction", 0.4, 0.9),
+        # Linear state-dependent sell-threshold policy (see robust_agent's
+        # _dynamic_sell_fraction) -- Optuna searches the weights of a small
+        # function instead of one constant. This is the "hybrid RL" layer:
+        # same search mechanics as everything else here, but the thing
+        # being searched is now a tiny policy, not a fixed number.
+        "sell_fraction_base": trial.suggest_float("sell_fraction_base", 0.2, 0.8),
+        "sell_fraction_day_weight": trial.suggest_float("sell_fraction_day_weight", -0.3, 0.3),
+        "sell_fraction_cash_weight": trial.suggest_float("sell_fraction_cash_weight", -0.3, 0.3),
+        "cash_scale": trial.suggest_int("cash_scale", 200, 4000, step=100),
         "max_sell_chunk": trial.suggest_int("max_sell_chunk", 3, 20),
         "money_reserve": trial.suggest_int("money_reserve", 20, 500, step=20),
         "seed_money_floor": trial.suggest_int("seed_money_floor", 5, 50),

@@ -25,7 +25,7 @@ FARM_UTILS_FUNCS = ["step_toward", "closest", "act_or_move", "shed_tiles"]
 ROBUST_AGENT_FUNCS = [
     "_crop_cycle_days", "_crop_score", "_diversified_crop_score", "_animal_score",
     "_base_price", "_plant_harvest_ready", "_scan_farm", "_plan_units",
-    "_carried_total", "_opponent_incoming_supply", "_market_orders",
+    "_carried_total", "_opponent_incoming_supply", "_dynamic_sell_fraction", "_market_orders",
 ]
 
 

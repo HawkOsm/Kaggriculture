@@ -2,12 +2,12 @@
 
 These are pure functions with no game-strategy opinions -- deciding *where*
 a unit should go and *what* it should do once there is each agent's job
-(that's the part that actually differs between multi_crop.py and
+(that's the part that actually differs between opponents/multi_crop.py and
 robust_agent.py); this module only answers "which direction is that" and
 "am I there yet". Every agent that walks a grid needs the same answer to
 those two questions, so it lives here once instead of copy-pasted per file.
 
-melon_maxxer.py is deliberately NOT wired to this module -- it's kept as a
+opponents/melon_maxxer.py is deliberately NOT wired to this module -- it's kept as a
 verbatim copy of the official bovard/kaggriculture-getting-started notebook
 (see TUTORIAL.md), so its own inline _step_toward is left alone.
 """

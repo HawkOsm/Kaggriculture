@@ -1,6 +1,6 @@
 """Kaggriculture robust, multi-unit, parameterized economic agent.
 
-Builds on melon_maxxer.py / multi_crop.py with three things they don't do:
+Builds on opponents/melon_maxxer.py / opponents/multi_crop.py with three things they don't do:
 
   1. Never raises. Every decision path is wrapped so a bug degrades to a
      harmless PASS instead of an engine "Error" status (which is presumably
@@ -39,9 +39,34 @@ from farm_utils import act_or_move, closest, shed_tiles
 # opponent that scaled hands 1->9 and land 1->3 quadrants while we sat on a
 # single unexpanded quadrant the whole game.
 DEFAULT_CONFIG = {
-    # Only sell a product once its price is at/above this fraction of base --
-    # avoid fire-selling into a glut (ours or the opponent's).
-    "sell_fraction": 0.6,
+    # Sell threshold is no longer one fixed number for the whole game -- it's
+    # a small linear function of two state features (days remaining, cash on
+    # hand), computed fresh every turn by _dynamic_sell_fraction(). Optuna
+    # searches the 3 weights below instead of one constant, which is the
+    # first piece of the "hybrid RL" layer: everything mechanical (movement,
+    # task priority) stays rule-based, but a few genuinely strategic scalars
+    # become state-dependent policies whose coefficients get tuned the same
+    # way as any other config value -- derivative-free policy search, the
+    # same family (evolution strategies / CMA-ES) real RL pipelines use when
+    # a full gradient-based policy network isn't worth the engineering cost.
+    # Intuition for the signs Optuna will actually search: positive
+    # day_weight = pickier early (more season left to wait for a better
+    # price), positive cash_weight = pickier when already cash-flush (can
+    # afford to hold out), and both push toward sell_fraction_min when
+    # broke/late so cash-flow wins over holding out.
+    "sell_fraction_base": 0.5,
+    "sell_fraction_day_weight": 0.1,
+    "sell_fraction_cash_weight": 0.1,
+    # Hard floor/ceiling regardless of what the linear policy computes --
+    # not searched, just a safety clamp so a bad coefficient combo can't
+    # produce a nonsensical (negative or >1) threshold.
+    "sell_fraction_min": 0.15,
+    "sell_fraction_max": 0.9,
+    # Reference cash level the cash-headroom feature is normalized against
+    # (money / cash_scale, clamped to [0, 1]) -- how much money "counts as
+    # flush" depends on the game's actual price/cost scale, so this is
+    # tunable rather than hardcoded to the $3000 starting balance.
+    "cash_scale": 1500,
     # Cap per-crop sell size per turn so one order doesn't crash its own
     # price mid-sale (selling is one-unit-at-a-time and price moves as it
     # goes).
@@ -183,6 +208,23 @@ def _animal_score(animal, price):
 
 def _base_price(item):
     return MARKET_PARAMS.get(item, {}).get("base", 0)
+
+
+def _dynamic_sell_fraction(config, day, money):
+    """How picky to be about sale price this turn, as a linear function of
+    two state features instead of one constant for the whole game. See
+    DEFAULT_CONFIG's sell_fraction_* comment for why -- this is the "hybrid
+    RL" piece: the coefficients are just more numbers Optuna searches, but
+    the resulting behavior can actually adapt within a single game."""
+    season_days = max(1, config["season_days"])
+    days_left_frac = max(0.0, config["season_days"] - day) / season_days
+    cash_frac = min(1.0, max(0.0, money / max(1.0, config["cash_scale"])))
+    raw = (
+        config["sell_fraction_base"]
+        + config["sell_fraction_day_weight"] * days_left_frac
+        + config["sell_fraction_cash_weight"] * cash_frac
+    )
+    return min(config["sell_fraction_max"], max(config["sell_fraction_min"], raw))
 
 
 # --------------------------------------------------------------------------
@@ -490,6 +532,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # In the wind-down window, ignore the threshold entirely -- any price
     # beats letting it sit unsold in the shed when the season ends.
     sellable = list(config["crops"]) + [a["product"] for a in ANIMALS.values()]
+    sell_fraction = _dynamic_sell_fraction(config, day, money)
     for item in sellable:
         qty = shed.get(item, 0)
         if qty <= 0:
@@ -498,7 +541,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             orders.append(["SELL", item, min(qty, config["max_sell_chunk"])])
             continue
         price = prices.get(item, _base_price(item))
-        threshold = config["sell_fraction"] * _base_price(item)
+        threshold = sell_fraction * _base_price(item)
         if config["opponent_awareness_enabled"] and opponent_supply.get(item, 0) >= config["opponent_incoming_threshold"]:
             threshold *= config["opponent_race_discount"]
         if price >= threshold:
@@ -610,13 +653,120 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
 
 
 # --------------------------------------------------------------------------
+# RL policy hook -- a trained network can re-decide these strategic knobs
+# once per day (not per turn: 30 decisions/game is tractable for RL, 720
+# isn't, and none of these need finer granularity than a day). Everything
+# mechanical (movement, task priority, harvesting) stays the proven
+# rule-based code above completely untouched -- the network only ever
+# outputs values that get merged into `cfg` and read by the same functions
+# Optuna already tunes. See train_rl.py for the training side; this module
+# stays torch-free on purpose so the submission build never needs torch.
+# --------------------------------------------------------------------------
+
+# (key, low, high, is_int) -- ranges match optimize.py's Optuna search space
+# so a trained policy and a searched static config are directly comparable.
+KNOB_SPECS = [
+    ("sell_fraction_base", 0.2, 0.8, False),
+    ("sell_fraction_day_weight", -0.3, 0.3, False),
+    ("sell_fraction_cash_weight", -0.3, 0.3, False),
+    ("hire_reserve_multiple", 0.5, 6.0, False),
+    ("max_hires_per_day", 0, 8, True),
+    ("land_utilization_threshold", 0.4, 0.95, False),
+    ("pasture_target_ratio", 0.0, 1.2, False),
+    ("animal_reserve_multiple", 1.0, 5.0, False),
+    ("hire_backlog_ratio", 0.3, 4.0, False),
+    ("diversification_weight", 0.0, 1.0, False),
+    ("money_reserve", 20, 500, True),
+    ("max_sell_chunk", 3, 20, True),
+]
+KNOB_KEYS = [k for k, *_ in KNOB_SPECS]
+
+# State features fed to the policy, in this fixed order. Kept small and
+# hand-picked (not the raw board) since the mechanical layer already turns
+# the board into a handful of meaningful numbers every turn (_scan_farm) --
+# reusing that instead of learning grid perception from scratch is exactly
+# what makes this tractable to train on a single GPU in hours, not days.
+FEATURE_NAMES = [
+    "day_frac", "days_left_frac", "cash_frac", "opp_cash_frac",
+    "land_frac", "occupancy", "unit_frac", "opp_unit_frac", "opp_land_frac",
+    "wheat_price", "carrot_price", "tomato_price", "strawberry_price", "melon_price",
+    "egg_price", "milk_price", "wool_price",
+]
+
+
+def extract_features(obs, cfg):
+    """Pure function, obs -> fixed-length float list (see FEATURE_NAMES).
+    No torch here -- the network lives in train_rl.py and calls this."""
+    farms = obs.get("farms", []) or []
+    player = obs.get("player", 0)
+    if not farms or player >= len(farms):
+        return [0.0] * len(FEATURE_NAMES)
+    farm = farms[player]
+    opponent_farm = next((f for i, f in enumerate(farms) if i != player), None)
+    day = obs.get("day", 0)
+    season_days = max(1, cfg["season_days"])
+    cash_scale = max(1.0, cfg["cash_scale"])
+    prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
+
+    board_size = len(farm["tiles"])
+    info = _scan_farm(farm, board_size, day)
+    unit_count = 1 + len(farm.get("hands", []) or [])
+    land_frac = len(farm.get("unlocked_quadrants", ["NW"])) / 4.0
+    occupancy = info["occupied"] / info["unlocked"] if info["unlocked"] else 0.0
+
+    if opponent_farm is not None:
+        opp_money = opponent_farm.get("money", 0.0)
+        opp_unit_count = 1 + len(opponent_farm.get("hands", []) or [])
+        opp_land_frac = len(opponent_farm.get("unlocked_quadrants", ["NW"])) / 4.0
+    else:
+        opp_money, opp_unit_count, opp_land_frac = 0.0, 1, 0.25
+
+    def price_ratio(item):
+        base = _base_price(item)
+        return (prices.get(item, base) / base) if base else 1.0
+
+    return [
+        day / season_days,
+        max(0.0, season_days - day) / season_days,
+        min(1.0, farm.get("money", 0.0) / cash_scale),
+        min(1.0, opp_money / cash_scale),
+        land_frac,
+        occupancy,
+        min(1.0, unit_count / 13.0),
+        min(1.0, opp_unit_count / 13.0),
+        opp_land_frac,
+        price_ratio("WHEAT"), price_ratio("CARROT"), price_ratio("TOMATO"),
+        price_ratio("STRAWBERRY"), price_ratio("MELON"),
+        price_ratio("EGG"), price_ratio("MILK"), price_ratio("WOOL"),
+    ]
+
+
+def decode_knobs(raw_actions):
+    """raw_actions: iterable of floats in [0, 1] (one per KNOB_SPECS entry,
+    e.g. a sigmoid-squashed network output) -> {config_key: value} scaled
+    into each knob's real range, rounded for the int-valued ones."""
+    out = {}
+    for (key, lo, hi, is_int), a in zip(KNOB_SPECS, raw_actions):
+        a = min(1.0, max(0.0, a))
+        value = lo + a * (hi - lo)
+        out[key] = int(round(value)) if is_int else value
+    return out
+
+
+# --------------------------------------------------------------------------
 # Public entry point
 # --------------------------------------------------------------------------
 
-def make_agent(config=None):
+def make_agent(config=None, policy_fn=None):
+    """policy_fn, if given, is called as policy_fn(features) -> {config_key:
+    value} once at the start of each in-game day (features = extract_features
+    output); the returned dict is merged over cfg for that whole day. Used
+    by train_rl.py during training and can be used for a trained policy's
+    submission agent too."""
     cfg = dict(DEFAULT_CONFIG)
     if config:
         cfg.update(config)
+    state = {"last_day": None}
 
     def agent(obs):
         try:
@@ -632,10 +782,22 @@ def make_agent(config=None):
             board_size = len(farm["tiles"])
             prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
 
+            turn_cfg = cfg
+            if policy_fn is not None and day != state["last_day"]:
+                state["last_day"] = day
+                features = extract_features(obs, cfg)
+                overrides = policy_fn(features)
+                if overrides:
+                    turn_cfg = dict(cfg)
+                    turn_cfg.update(overrides)
+                    state["cfg"] = turn_cfg
+            elif policy_fn is not None and "cfg" in state:
+                turn_cfg = state["cfg"]
+
             info = _scan_farm(farm, board_size, day)
-            opponent_supply = _opponent_incoming_supply(opponent_farm, board_size, day, cfg["opponent_lookahead_days"])
-            market_orders = _market_orders(farm, private, info, cfg, prices, day, opponent_supply)
-            farmer_action, hands_actions = _plan_units(farm, private, board_size, day, info, cfg, prices)
+            opponent_supply = _opponent_incoming_supply(opponent_farm, board_size, day, turn_cfg["opponent_lookahead_days"])
+            market_orders = _market_orders(farm, private, info, turn_cfg, prices, day, opponent_supply)
+            farmer_action, hands_actions = _plan_units(farm, private, board_size, day, info, turn_cfg, prices)
 
             return {"farmer": farmer_action, "hands": hands_actions, "market": market_orders}
         except Exception as exc:  # noqa: BLE001 -- deliberate catch-all safety net

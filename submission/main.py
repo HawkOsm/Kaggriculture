@@ -22,31 +22,36 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
     MARKET_PARAMS,
 )
 
-CONFIG = {'sell_fraction': 0.4238965966279761,
- 'max_sell_chunk': 18,
- 'money_reserve': 260,
- 'seed_money_floor': 35,
- 'hire_money_floor': 10,
- 'hire_reserve_multiple': 2.4542934576307185,
+CONFIG = {'sell_fraction_base': 0.5682870864404602,
+ 'sell_fraction_day_weight': -0.14922453930474888,
+ 'sell_fraction_cash_weight': -0.25847809548179207,
+ 'sell_fraction_min': 0.15,
+ 'sell_fraction_max': 0.9,
+ 'cash_scale': 3700,
+ 'max_sell_chunk': 12,
+ 'money_reserve': 460,
+ 'seed_money_floor': 28,
+ 'hire_money_floor': 40,
+ 'hire_reserve_multiple': 4.722919902700482,
  'max_hires_per_day': 7,
  'animal_enabled': True,
  'enable_coop': False,
- 'max_structures': 8,
- 'pasture_target_ratio': 0.44983420778403976,
- 'animal_reserve_multiple': 4.63733097620939,
- 'startup_days': 5,
- 'land_startup_days': 7,
- 'land_utilization_threshold': 0.6049465464613537,
+ 'max_structures': 4,
+ 'pasture_target_ratio': 0.6154378135853805,
+ 'animal_reserve_multiple': 2.176334742582399,
+ 'startup_days': 2,
+ 'land_startup_days': 6,
+ 'land_utilization_threshold': 0.6315153080549984,
  'buy_fertilizer': False,
- 'crops': ['WHEAT', 'CARROT', 'TOMATO', 'STRAWBERRY', 'MELON'],
- 'hire_backlog_ratio': 3.748874682526517,
- 'diversification_weight': 0.3248707769196837,
+ 'crops': ['WHEAT', 'CARROT', 'MELON'],
+ 'hire_backlog_ratio': 2.4243545807577753,
+ 'diversification_weight': 0.603006467216205,
  'season_days': 30,
  'wind_down_days': 3,
  'opponent_awareness_enabled': False,
- 'opponent_incoming_threshold': 8,
- 'opponent_race_discount': 0.518046837120061,
- 'opponent_lookahead_days': 2}
+ 'opponent_incoming_threshold': 4,
+ 'opponent_race_discount': 0.5376137683171243,
+ 'opponent_lookahead_days': 3}
 
 SAFE_FALLBACK = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -400,6 +405,23 @@ def _opponent_incoming_supply(opponent_farm, board_size, day, lookahead_days):
     return supply
 
 
+def _dynamic_sell_fraction(config, day, money):
+    """How picky to be about sale price this turn, as a linear function of
+    two state features instead of one constant for the whole game. See
+    DEFAULT_CONFIG's sell_fraction_* comment for why -- this is the "hybrid
+    RL" piece: the coefficients are just more numbers Optuna searches, but
+    the resulting behavior can actually adapt within a single game."""
+    season_days = max(1, config["season_days"])
+    days_left_frac = max(0.0, config["season_days"] - day) / season_days
+    cash_frac = min(1.0, max(0.0, money / max(1.0, config["cash_scale"])))
+    raw = (
+        config["sell_fraction_base"]
+        + config["sell_fraction_day_weight"] * days_left_frac
+        + config["sell_fraction_cash_weight"] * cash_frac
+    )
+    return min(config["sell_fraction_max"], max(config["sell_fraction_min"], raw))
+
+
 def _market_orders(farm, private, info, config, prices, day, opponent_supply=None):
     orders = []
     money = farm["money"]
@@ -425,6 +447,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # In the wind-down window, ignore the threshold entirely -- any price
     # beats letting it sit unsold in the shed when the season ends.
     sellable = list(config["crops"]) + [a["product"] for a in ANIMALS.values()]
+    sell_fraction = _dynamic_sell_fraction(config, day, money)
     for item in sellable:
         qty = shed.get(item, 0)
         if qty <= 0:
@@ -433,7 +456,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             orders.append(["SELL", item, min(qty, config["max_sell_chunk"])])
             continue
         price = prices.get(item, _base_price(item))
-        threshold = config["sell_fraction"] * _base_price(item)
+        threshold = sell_fraction * _base_price(item)
         if config["opponent_awareness_enabled"] and opponent_supply.get(item, 0) >= config["opponent_incoming_threshold"]:
             threshold *= config["opponent_race_discount"]
         if price >= threshold:
