@@ -163,6 +163,7 @@ def make_training_agent(net, base_cfg, transitions, deterministic=False):
             market_orders = _market_orders(
                 farm, private, info, turn_cfg, prices, day,
                 opponent_supply, opponent_concentration, opponent_scale,
+                opponent_farm,
             )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, turn_cfg, prices, state["unit_targets"]

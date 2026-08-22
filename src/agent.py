@@ -186,6 +186,53 @@ DEFAULT_CONFIG = {
     # opponent. An ablation found the single best static discount for one
     # opponent was a clear loss against a different one (docs/tests/LOG.md).
     "opponent_concentration_sensitivity": 0.3,
+    # Relative-wealth risk scaling: coin margin at game end doesn't matter,
+    # only win/loss (docs/GAME_GUIDE.md) -- so the right target isn't "max
+    # expected money," it's "stay ahead of the opponent's total wealth."
+    # This mirrors two real finance ideas: (1) CPPI (constant proportion
+    # portfolio insurance) -- cushion = value - floor, risky_allocation =
+    # multiplier * cushion -- adapted so the floor is the opponent's total
+    # value instead of a fixed capital line; (2) tournament-theory "gambling
+    # for resurrection" in mutual fund management -- funds trailing their
+    # peer benchmark increase risk to catch up, funds leading it reduce risk
+    # to lock in the win, the mirror image of CPPI's proportional-with-
+    # cushion scaling (see docs/tests/LOG.md for the citations). Both sides'
+    # "total value" is money (public, docs/GAME_GUIDE.md: farm dicts are
+    # public for both players) plus `_standing_asset_value`'s full
+    # mark-to-market of every standing crop/animal, not just near-ripe ones.
+    #
+    # NOT verified to help. A first pass (narrower asset valuation, min=0.4
+    # symmetric) regressed; a follow-up (this valuation, min=1.0 asymmetric)
+    # looked like a real win at 4 episodes/opponent (rajan1673 3W-1L->4W-0L,
+    # chaitanyajamble 1W-3L->2W-2L) but **evaporated at 10 episodes**
+    # (rajan1673 was already a clean 10W-0L at baseline -- the mechanism
+    # made it 9W-1L; chaitanyajamble was an unchanged 2W-8L either way). The
+    # 4-episode result was noise, not signal -- see docs/tests/LOG.md. Left
+    # wired up (a legitimate, correctly-implemented mechanism, confirmed via
+    # direct trace to compute margin/risk_scale as designed) but
+    # risk_sensitivity defaults to 0 below, making this a structural no-op
+    # until a real Optuna search with the dedicated multi-episode
+    # verification gate finds actual support for a nonzero value -- not
+    # something to hand-pick from a small sample again.
+    "relative_wealth_enabled": True,
+    # Dollar scale that normalizes the money margin into a fraction before
+    # it hits risk_sensitivity -- keeps the effect proportionate whether the
+    # margin is a day-3 $200 gap or a day-25 $20,000 one.
+    "wealth_margin_scale": 3000.0,
+    # 0 = no-op (risk_scale always exactly 1.0, identical to the mechanism
+    # being off). See the relative_wealth_enabled comment above for why this
+    # isn't a hand-picked nonzero default yet.
+    "risk_sensitivity": 0.0,
+    # Multiplier floor/ceiling on every reserve-style spending gate (money
+    # reserve, hire floor/reserve, animal reserve). min=1.0 rather than a
+    # theory-symmetric <1 -- see relative_wealth_enabled's comment: the
+    # symmetric "loosen when behind" version tested strictly worse, since
+    # "spend more when behind" is the same intervention that's already
+    # regressed 8 separate times this session for reasons unrelated to what
+    # triggers it (see docs/tests/IDEAS_TRIED.md, "Spending posture") --
+    # our current dispatch/execution capacity can't productively absorb it.
+    "risk_scale_min": 1.0,
+    "risk_scale_max": 2.0,
     # _plan_units' dispatch tiers execute in descending-weight order, sorted
     # fresh each turn -- a real number per tier (flat keys, like every other
     # tunable knob here, so KNOB_SPECS/optimize.py's search space can pick
@@ -870,8 +917,47 @@ def _opponent_profile(opponent_farm, board_size, day, lookahead_days):
     return supply, concentration, scale
 
 
+def _standing_asset_value(farm, prices):
+    """Estimate the market value of everything currently growing/held on a
+    farm, priced at current rates -- the "unrealized gains" half of total
+    wealth for the relative-wealth risk scale below. Deliberately broader
+    than `_opponent_profile`'s `supply` (which only counts already-ripe or
+    near-ripe-within-lookahead output, tuned for a different question --
+    "what's about to hit the market"): every standing crop counts at its
+    full expected yield value regardless of growth stage, and every live
+    animal counts at its purchase cost (the sunk capital already committed)
+    plus anything it's already produced. A freshly-planted crop or a
+    just-bought animal is real future money even though it contributes
+    nothing to `supply` -- valuing it at $0 (the original version of this
+    mechanism) meant an opponent mid-way through a heavy build-out phase
+    (near-broke on cash, but sitting on a large just-planted/just-stocked
+    position) looked artificially poor and the mechanism reacted to their
+    threat a turn too late. Both farms' tiles are legally visible either
+    way (docs/GAME_GUIDE.md: farm dicts are public)."""
+    if farm is None:
+        return 0.0
+    value = 0.0
+    for row in farm.get("tiles") or []:
+        for tile in row or []:
+            if not isinstance(tile, dict):
+                continue
+            kind = tile.get("kind")
+            if kind == "PLANT":
+                crop = tile.get("crop")
+                c = CROPS.get(crop)
+                if c is not None:
+                    value += c["max_yield"] * prices.get(crop, _base_price(crop))
+            elif kind in ("COOP", "PASTURE") and tile.get("animal"):
+                a = ANIMALS.get(tile["animal"])
+                if a is not None:
+                    value += a["cost"]
+                    if tile.get("yield_units", 0) > 0:
+                        value += tile["yield_units"] * prices.get(a["product"], _base_price(a["product"]))
+    return value
+
+
 def _market_orders(farm, private, info, config, prices, day, opponent_supply=None,
-                    opponent_concentration=None, opponent_scale=0.0):
+                    opponent_concentration=None, opponent_scale=0.0, opponent_farm=None):
     orders = []
     money = farm["money"]
     # Optional "broke phase": scale every spending reserve/gate down for the
@@ -889,12 +975,38 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         if day < config["season_days"] * config["broke_phase_days_frac"]
         else 1.0
     )
-    reserve = config["money_reserve"] * phase_scale
     shed = private.get("shed", {}) or {}
     seeds = private.get("seeds", {}) or {}
     started_up = day >= config["startup_days"]
     opponent_supply = opponent_supply or {}
     opponent_concentration = opponent_concentration or {}
+
+    # Relative-wealth risk scale (see DEFAULT_CONFIG's relative_wealth_enabled
+    # comment for the CPPI / tournament-theory framing): margin = our total
+    # value minus the opponent's, both money + `_standing_asset_value`'s
+    # full mark-to-market of every standing crop/animal, not just near-ripe
+    # ones -- an opponent mid-way through a build-out (cash-poor, asset-rich)
+    # needs to register as a real threat, not look artificially behind.
+    # margin > 0 (we're ahead) pushes risk_scale above 1 -- every reserve
+    # gate gets stricter, since a bigger lead doesn't score any higher, only
+    # losing the lead would hurt. risk_scale_min is clamped to 1.0 by
+    # default (see that key's own comment for why the symmetric <1 "loosen
+    # when behind" version was tested and reverted). opponent_farm is None
+    # when there's no opponent to compare against (e.g. a solo sanity check)
+    # -- risk_scale stays at a neutral 1.0 in that case.
+    if config["relative_wealth_enabled"] and opponent_farm is not None:
+        our_value = money + _standing_asset_value(farm, prices)
+        opp_value = opponent_farm.get("money", 0) + _standing_asset_value(opponent_farm, prices)
+        margin_frac = (our_value - opp_value) / config["wealth_margin_scale"]
+        risk_scale = min(
+            config["risk_scale_max"],
+            max(config["risk_scale_min"], 1.0 + config["risk_sensitivity"] * margin_frac),
+        )
+    else:
+        risk_scale = 1.0
+
+    scale = phase_scale * risk_scale
+    reserve = config["money_reserve"] * scale
     # Reward is money at game end, full stop -- unsold shed inventory and
     # freshly-hired hands with no time left to earn back their cost are pure
     # waste in the closing days. The #1 player visibly winds crop mix back
@@ -1005,7 +1117,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             # built drains the day-0 cash pile that hiring/land also need.
             if (
                 len(info["empty_pasture"]) > pasture_pending
-                and remaining - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * phase_scale
+                and remaining - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * scale
             ):
                 orders.append(["BUY_ANIMAL", best, 1])
                 remaining -= ANIMALS[best]["cost"]
@@ -1031,7 +1143,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         hire_cost = a
         if (
             backlog > unit_count * config["hire_backlog_ratio"]
-            and remaining - config["hire_money_floor"] * phase_scale >= hire_cost * config["hire_reserve_multiple"] * phase_scale
+            and remaining - config["hire_money_floor"] * scale >= hire_cost * config["hire_reserve_multiple"] * scale
         ):
             orders.append(["HIRE"])
             remaining -= hire_cost
@@ -1112,8 +1224,19 @@ KNOB_SPECS = [
     ("diversification_weight", 0.0, 1.0, False),
     ("money_reserve", 20, 500, True),
     ("max_sell_chunk", 3, 20, True),
-    ("sell_backlog_multiple", 1.0, 6.0, False),
+    # sell_backlog_multiple deliberately NOT here -- it's genuinely unused by
+    # _market_orders (the force-sell logic that read it was reverted, see
+    # that revert's comment a few hundred lines up), so searching it just
+    # burns a real dimension on a knob with zero behavioral effect. Stays in
+    # DEFAULT_CONFIG in case a smarter version of the idea gets revisited.
     ("opponent_concentration_sensitivity", 0.0, 1.0, False),
+    ("wealth_margin_scale", 500.0, 10000.0, False),
+    ("risk_sensitivity", 0.0, 2.0, False),
+    # Narrowed to >=0.7 after direct verification found <1.0 (loosening
+    # reserves when behind) regresses -- see risk_scale_min's DEFAULT_CONFIG
+    # comment and docs/tests/IDEAS_TRIED.md.
+    ("risk_scale_min", 0.7, 1.5, False),
+    ("risk_scale_max", 1.0, 4.0, False),
 ] + [
     # One entry per dispatch tier (see DEFAULT_CONFIG's priority_weight_*
     # comment) -- generated from PRIORITY_TIER_NAMES so this list can't
@@ -1249,6 +1372,7 @@ def make_agent(config=None, policy_fn=None):
             market_orders = _market_orders(
                 farm, private, info, turn_cfg, prices, day,
                 opponent_supply, opponent_concentration, opponent_scale,
+                opponent_farm,
             )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, turn_cfg, prices, state["unit_targets"]

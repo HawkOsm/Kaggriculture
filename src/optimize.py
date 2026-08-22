@@ -2,13 +2,15 @@
 
 Frames tuning as beating a reigning champion instead of chasing a raw reward
 number: each trial's candidate config plays a fixed opponent pool --
-default is the five pulled-from-Kaggle 2500+ opponents (kawa, boatlee_v16,
-rayk_c95, saiteja, kaito -- see CREDITS.md) plus the current champion config
-(loaded from best_config.json, or DEFAULT_CONFIG on the very first run) --
-and is scored by average reward *margin* (candidate - opponent), not raw
-reward. That's what "steady progression" means here: every run of this
-script tries to beat whatever the previous run's winner was, so
-best_config.json only moves forward.
+default is nine pulled-from-Kaggle 2500+ opponents (kawa, boatlee_v16,
+rayk_c95, saiteja, kaito, tran_hh, pilkwang, romanrozen, prvsiyan_frontier
+-- see CREDITS.md) plus two near our own live rating (rajan1673,
+chaitanyajamble, weighted 2x each -- see OPPONENT_REGISTRY's comment)
+plus the current champion config (loaded from best_config.json, or
+DEFAULT_CONFIG on the very first run) -- and is scored by average reward
+*margin* (candidate - opponent), not raw reward. That's what "steady
+progression" means here: every run of this script tries to beat whatever
+the previous run's winner was, so best_config.json only moves forward.
 
 Because episodes aren't seeded, a single episode is noisy -- each trial
 plays --episodes-per-opponent episodes against every opponent (both seat
@@ -51,9 +53,23 @@ from opponents.tran_hh_agent import tran_hh_agent
 from opponents.pilkwang_agent import pilkwang_agent
 from opponents.romanrozen_agent import romanrozen_agent
 from opponents.prvsiyan_frontier_agent import prvsiyan_frontier_agent
+from opponents.rajan1673_agent import agent as rajan1673_agent
+from opponents.chaitanyajamble_agent import agent as chaitanyajamble_agent
+from opponents.ektarr_agent import agent as ektarr_agent
+from opponents.nagatakengo_agent import agent as nagatakengo_agent
+from opponents.premaananda108_agent import agent as premaananda108_agent
+from opponents.sakhawathossen_agent import agent as sakhawathossen_agent
 
 # Real opponent agents, keyed by the name used in --opponents. "champion" is
 # handled separately (built fresh from champion_config each call, not fixed).
+# rajan1673/chaitanyajamble/ektarr/nagatakengo are near our own live rating
+# (~467, found via the public leaderboard -- see docs/tests/LOG.md, "pulled
+# two near-tier opponents" and "sourced 4 more real opponents"); everything
+# else here is a stronger Elo stretch-goal opponent, several confirmed this
+# session to be pre-solved fixed-route scripts (kawa/prvsiyan specifically,
+# see LOG.md's "MAJOR REFRAME" entry) rather than live adaptive strategies
+# -- so near-tier wins are the more realistic near-term signal despite the
+# pool being dominated by the stronger set.
 OPPONENT_REGISTRY = {
     "kawa": kawa_route_agent,
     "boatlee_v16": boatlee_v16_agent,
@@ -64,6 +80,12 @@ OPPONENT_REGISTRY = {
     "pilkwang": pilkwang_agent,
     "romanrozen": romanrozen_agent,
     "prvsiyan_frontier": prvsiyan_frontier_agent,
+    "rajan1673": rajan1673_agent,
+    "chaitanyajamble": chaitanyajamble_agent,
+    "ektarr": ektarr_agent,
+    "nagatakengo": nagatakengo_agent,
+    "premaananda108": premaananda108_agent,
+    "sakhawathossen": sakhawathossen_agent,
     "random": "random",
     "pass": "pass",
     "starter": "starter",
@@ -82,11 +104,53 @@ LOG_PATH = REPO_ROOT / "docs" / "tests" / "LOG.md"
 OPTUNA_DIR = REPO_ROOT / "output" / "optuna"
 OPTUNA_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_STORAGE = f"sqlite:///{OPTUNA_DIR / 'optuna_study.db'}"
-# Renamed when the search space changed for the scaling-strategy redesign
-# (see docs/tests/LOG.md) -- old trials used a different, now-incompatible
-# set of config keys (structure_money_threshold, no hire_money_floor, etc.),
-# so this points at a fresh study rather than silently mixing histories.
-DEFAULT_STUDY_NAME = "robust_agent_config_v2_scaling"
+# Renamed a fourth time after adding ektarr/nagatakengo (near-tier, weighted
+# 2x) and premaananda108/sakhawathossen (stronger, 1x) to the default
+# --opponents pool -- same reasoning as the v5->v6 rename just below: a
+# different opponent pool means a different reward distribution at every
+# step, which is exactly the kind of change MedianPruner contamination
+# cares about even though the search-space shape itself didn't move. v6's
+# own history (real promotion, 9W-1L verification -- see docs/tests/LOG.md)
+# stays valid on its own terms, just not comparable to trials scored
+# against this new, larger 20-entry pool.
+DEFAULT_STUDY_NAME = "robust_agent_config_v7_more_opponents"
+#
+# --- superseded reasoning, kept for context ---
+# Renamed a third time after adding rajan1673/chaitanyajamble (weighted 2x)
+# to the default --opponents pool. Search-space shape didn't change, but
+# MedianPruner contamination isn't only about param shape -- it's about the
+# objective's meaning at each step, and a different opponent pool (14
+# entries now vs 10, different reward scale/distribution at every episode
+# count) is exactly that kind of change. v5's own history (real promotion,
+# 6W-4L verification, see docs/tests/LOG.md) stays valid on its own terms;
+# it's just not comparable to trials scored against this new pool.
+# DEFAULT_STUDY_NAME = "robust_agent_config_v6_near_tier_weighted"  # superseded, see above
+#
+# --- superseded reasoning, kept for context ---
+# Renamed again after adding 4 relative-wealth knobs (wealth_margin_scale,
+# risk_sensitivity, risk_scale_min, risk_scale_max -- 29-dim search space,
+# up from 25). Same MedianPruner-contamination reasoning as the v3->v4
+# rename below: a persistent study's pruning decisions are judged against
+# the median of *all prior trials at that step*, so reusing v4's history
+# (whose trials never had these 4 keys) would silently handicap every new
+# trial regardless of its actual params. v4 itself is not abandoned/wasted
+# -- see its own history for the 87/400 completion-rate confirmation that
+# a truly fresh study works as intended. (Note: "v3_dynamic_sell" is a
+# separate, already-abandoned 100-trial study from earlier in the session
+# -- not reused either.) See docs/tests/LOG.md.
+#
+# --- superseded reasoning, kept for context ---
+# Renamed after adding the 11 priority_weight_* dispatch-tier knobs +
+# opponent_concentration_sensitivity (25-dim search space, up from 13/22).
+# Two searches (450 then 1000 trials, 2081 pruned total) against
+# robust_agent_config_v2_scaling never produced a single completed trial
+# with the new keys -- MedianPruner compares each new trial's intermediate
+# progress against the median of *all prior trials at that step*, and v2's
+# history (8+ searches, an early margin-36325.9 outlier never beaten since)
+# makes every new trial look bad almost immediately regardless of its actual
+# params. A fresh study starts pruning decisions from a clean baseline
+# instead of being judged against a different search space's history.
+# DEFAULT_STUDY_NAME = "robust_agent_config_v5_relative_wealth"  # superseded, see above
 
 
 CROP_PROFILES = {
@@ -117,7 +181,14 @@ def sample_config(trial):
         "sell_fraction_cash_weight": trial.suggest_float("sell_fraction_cash_weight", -0.3, 0.3),
         "cash_scale": trial.suggest_int("cash_scale", 200, 4000, step=100),
         "max_sell_chunk": trial.suggest_int("max_sell_chunk", 3, 20),
-        "sell_backlog_multiple": trial.suggest_float("sell_backlog_multiple", 1.0, 6.0),
+        # sell_backlog_multiple deliberately NOT searched -- see the matching
+        # comment on agent.py's KNOB_SPECS. It's genuinely unused by
+        # _market_orders (the force-sell logic that read it was reverted),
+        # so searching it burns a real dimension for zero behavioral effect.
+        # This removal was decided and documented earlier in the session but
+        # the edit to this file didn't actually land then -- every search
+        # since (through v7) searched it anyway; harmless (just wasted
+        # search budget), not a correctness bug.
         "money_reserve": trial.suggest_int("money_reserve", 20, 500, step=20),
         "seed_money_floor": trial.suggest_int("seed_money_floor", 5, 50),
         "hire_money_floor": trial.suggest_int("hire_money_floor", 0, 100, step=10),
@@ -148,6 +219,17 @@ def sample_config(trial):
         "opponent_concentration_sensitivity": trial.suggest_float("opponent_concentration_sensitivity", 0.0, 1.0),
         "opponent_lookahead_days": trial.suggest_int("opponent_lookahead_days", 0, 5),
         "crop_profile": trial.suggest_categorical("crop_profile", sorted(CROP_PROFILES.keys())),
+        # Relative-wealth risk scale (see agent.py DEFAULT_CONFIG's
+        # relative_wealth_enabled comment) -- fixed on, same reasoning as
+        # opponent_awareness_enabled above: the shape knobs below already
+        # reduce to a no-op at risk_sensitivity=0, so there's no reason to
+        # let a noisy trial disable the whole mechanism instead of just
+        # tuning it toward flat.
+        "relative_wealth_enabled": True,
+        "wealth_margin_scale": trial.suggest_float("wealth_margin_scale", 500.0, 10000.0),
+        "risk_sensitivity": trial.suggest_float("risk_sensitivity", 0.0, 2.0),
+        "risk_scale_min": trial.suggest_float("risk_scale_min", 0.7, 1.5),
+        "risk_scale_max": trial.suggest_float("risk_scale_max", 1.0, 4.0),
     }
     # One float knob per _plan_units dispatch tier -- lets the search find a
     # better task-priority order instead of it only changing when someone
@@ -317,7 +399,20 @@ def main():
     parser.add_argument("--episodes-per-opponent", type=int, default=2, help="must be even for balanced seating")
     parser.add_argument(
         "--opponents",
-        default="kawa,boatlee_v16,rayk_c95,saiteja,kaito,tran_hh,pilkwang,romanrozen,prvsiyan_frontier,champion",
+        # Near-tier names (close to our own ~467 live rating: rajan1673,
+        # chaitanyajamble, ektarr ~554, nagatakengo ~428) listed twice each
+        # -- evaluate_config gives every listed name equal
+        # episodes_per_opponent episodes, so a repeated name is 2x the
+        # effective weight of a single-listed one. premaananda108 (~850)
+        # and sakhawathossen (~1600) are stronger, closer to the original
+        # stretch-goal set, so 1x like those. See OPPONENT_REGISTRY's
+        # comment and docs/tests/LOG.md.
+        default=(
+            "kawa,boatlee_v16,rayk_c95,saiteja,kaito,tran_hh,pilkwang,romanrozen,"
+            "prvsiyan_frontier,premaananda108,sakhawathossen,"
+            "rajan1673,rajan1673,chaitanyajamble,chaitanyajamble,"
+            "ektarr,ektarr,nagatakengo,nagatakengo,champion"
+        ),
         help=f"comma-separated: {sorted(OPPONENT_REGISTRY)} or champion",
     )
     parser.add_argument("--study-name", default=DEFAULT_STUDY_NAME)

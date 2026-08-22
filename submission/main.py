@@ -22,51 +22,56 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
     MARKET_PARAMS,
 )
 
-CONFIG = {'sell_fraction_base': 0.5682870864404602,
- 'sell_fraction_day_weight': -0.14922453930474888,
- 'sell_fraction_cash_weight': -0.25847809548179207,
+CONFIG = {'sell_fraction_base': 0.46288312129404735,
+ 'sell_fraction_day_weight': 0.052944245483376506,
+ 'sell_fraction_cash_weight': -0.06388422078868353,
  'sell_fraction_min': 0.15,
  'sell_fraction_max': 0.9,
- 'cash_scale': 3700,
- 'max_sell_chunk': 12,
- 'sell_backlog_multiple': 2.5,
- 'money_reserve': 460,
+ 'cash_scale': 3900,
+ 'max_sell_chunk': 8,
+ 'sell_backlog_multiple': 5.073588763331714,
+ 'money_reserve': 420,
  'broke_phase_days_frac': 0.0,
  'broke_phase_reserve_scale': 1.0,
- 'seed_money_floor': 28,
- 'hire_money_floor': 40,
- 'hire_reserve_multiple': 4.722919902700482,
- 'max_hires_per_day': 7,
+ 'seed_money_floor': 25,
+ 'hire_money_floor': 60,
+ 'hire_reserve_multiple': 1.2868527815789883,
+ 'max_hires_per_day': 6,
  'animal_enabled': True,
  'enable_coop': False,
  'max_structures': 4,
- 'pasture_target_ratio': 0.6154378135853805,
- 'animal_reserve_multiple': 2.176334742582399,
+ 'pasture_target_ratio': 0.6139913922913309,
+ 'animal_reserve_multiple': 2.595799954753388,
  'startup_days': 2,
- 'land_startup_days': 6,
- 'land_utilization_threshold': 0.6315153080549984,
+ 'land_startup_days': 8,
+ 'land_utilization_threshold': 0.7844950137160052,
  'buy_fertilizer': False,
- 'crops': ['WHEAT', 'CARROT', 'MELON'],
- 'hire_backlog_ratio': 2.4243545807577753,
- 'diversification_weight': 0.603006467216205,
+ 'crops': ['WHEAT', 'CARROT', 'TOMATO', 'STRAWBERRY', 'MELON'],
+ 'hire_backlog_ratio': 2.0586600581339973,
+ 'diversification_weight': 0.46489068096515895,
  'season_days': 30,
  'wind_down_days': 3,
  'opponent_awareness_enabled': True,
- 'opponent_incoming_threshold': 4,
- 'opponent_race_discount': 0.5376137683171243,
+ 'opponent_incoming_threshold': 9,
+ 'opponent_race_discount': 0.9655340065792685,
  'opponent_lookahead_days': 3,
- 'opponent_concentration_sensitivity': 0.3,
- 'priority_weight_feed': 100.0,
- 'priority_weight_care': 95.0,
- 'priority_weight_harvest': 90.0,
- 'priority_weight_fertilize': 85.0,
- 'priority_weight_collect_fertilizer': 80.0,
- 'priority_weight_water': 75.0,
- 'priority_weight_empty_coop_place': 50.0,
- 'priority_weight_empty_pasture_place': 45.0,
- 'priority_weight_weeds': 20.0,
- 'priority_weight_empty_build': 15.0,
- 'priority_weight_empty_plant': 10.0}
+ 'opponent_concentration_sensitivity': 0.6634759244356456,
+ 'relative_wealth_enabled': True,
+ 'wealth_margin_scale': 2925.410674583168,
+ 'risk_sensitivity': 0.8922000048258688,
+ 'risk_scale_min': 0.8862056218250035,
+ 'risk_scale_max': 2.3531408542357126,
+ 'priority_weight_feed': 28.43172059455725,
+ 'priority_weight_care': 34.998862122942356,
+ 'priority_weight_harvest': 93.12309658795056,
+ 'priority_weight_fertilize': 20.728901657756897,
+ 'priority_weight_collect_fertilizer': 68.0900009691404,
+ 'priority_weight_water': 12.008227925293447,
+ 'priority_weight_empty_coop_place': 6.420598313711167,
+ 'priority_weight_empty_pasture_place': 14.14611078775056,
+ 'priority_weight_weeds': 38.60857710296399,
+ 'priority_weight_empty_build': 15.226715136687174,
+ 'priority_weight_empty_plant': 65.01973167073385}
 
 SAFE_FALLBACK = {"farmer": ["PASS"], "hands": [], "market": []}
 
@@ -734,6 +739,45 @@ def _opponent_profile(opponent_farm, board_size, day, lookahead_days):
     return supply, concentration, scale
 
 
+def _standing_asset_value(farm, prices):
+    """Estimate the market value of everything currently growing/held on a
+    farm, priced at current rates -- the "unrealized gains" half of total
+    wealth for the relative-wealth risk scale below. Deliberately broader
+    than `_opponent_profile`'s `supply` (which only counts already-ripe or
+    near-ripe-within-lookahead output, tuned for a different question --
+    "what's about to hit the market"): every standing crop counts at its
+    full expected yield value regardless of growth stage, and every live
+    animal counts at its purchase cost (the sunk capital already committed)
+    plus anything it's already produced. A freshly-planted crop or a
+    just-bought animal is real future money even though it contributes
+    nothing to `supply` -- valuing it at $0 (the original version of this
+    mechanism) meant an opponent mid-way through a heavy build-out phase
+    (near-broke on cash, but sitting on a large just-planted/just-stocked
+    position) looked artificially poor and the mechanism reacted to their
+    threat a turn too late. Both farms' tiles are legally visible either
+    way (docs/GAME_GUIDE.md: farm dicts are public)."""
+    if farm is None:
+        return 0.0
+    value = 0.0
+    for row in farm.get("tiles") or []:
+        for tile in row or []:
+            if not isinstance(tile, dict):
+                continue
+            kind = tile.get("kind")
+            if kind == "PLANT":
+                crop = tile.get("crop")
+                c = CROPS.get(crop)
+                if c is not None:
+                    value += c["max_yield"] * prices.get(crop, _base_price(crop))
+            elif kind in ("COOP", "PASTURE") and tile.get("animal"):
+                a = ANIMALS.get(tile["animal"])
+                if a is not None:
+                    value += a["cost"]
+                    if tile.get("yield_units", 0) > 0:
+                        value += tile["yield_units"] * prices.get(a["product"], _base_price(a["product"]))
+    return value
+
+
 def _dynamic_sell_fraction(config, day, money):
     """How picky to be about sale price this turn, as a linear function of
     two state features instead of one constant for the whole game. See
@@ -752,7 +796,7 @@ def _dynamic_sell_fraction(config, day, money):
 
 
 def _market_orders(farm, private, info, config, prices, day, opponent_supply=None,
-                    opponent_concentration=None, opponent_scale=0.0):
+                    opponent_concentration=None, opponent_scale=0.0, opponent_farm=None):
     orders = []
     money = farm["money"]
     # Optional "broke phase": scale every spending reserve/gate down for the
@@ -770,12 +814,38 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         if day < config["season_days"] * config["broke_phase_days_frac"]
         else 1.0
     )
-    reserve = config["money_reserve"] * phase_scale
     shed = private.get("shed", {}) or {}
     seeds = private.get("seeds", {}) or {}
     started_up = day >= config["startup_days"]
     opponent_supply = opponent_supply or {}
     opponent_concentration = opponent_concentration or {}
+
+    # Relative-wealth risk scale (see DEFAULT_CONFIG's relative_wealth_enabled
+    # comment for the CPPI / tournament-theory framing): margin = our total
+    # value minus the opponent's, both money + `_standing_asset_value`'s
+    # full mark-to-market of every standing crop/animal, not just near-ripe
+    # ones -- an opponent mid-way through a build-out (cash-poor, asset-rich)
+    # needs to register as a real threat, not look artificially behind.
+    # margin > 0 (we're ahead) pushes risk_scale above 1 -- every reserve
+    # gate gets stricter, since a bigger lead doesn't score any higher, only
+    # losing the lead would hurt. risk_scale_min is clamped to 1.0 by
+    # default (see that key's own comment for why the symmetric <1 "loosen
+    # when behind" version was tested and reverted). opponent_farm is None
+    # when there's no opponent to compare against (e.g. a solo sanity check)
+    # -- risk_scale stays at a neutral 1.0 in that case.
+    if config["relative_wealth_enabled"] and opponent_farm is not None:
+        our_value = money + _standing_asset_value(farm, prices)
+        opp_value = opponent_farm.get("money", 0) + _standing_asset_value(opponent_farm, prices)
+        margin_frac = (our_value - opp_value) / config["wealth_margin_scale"]
+        risk_scale = min(
+            config["risk_scale_max"],
+            max(config["risk_scale_min"], 1.0 + config["risk_sensitivity"] * margin_frac),
+        )
+    else:
+        risk_scale = 1.0
+
+    scale = phase_scale * risk_scale
+    reserve = config["money_reserve"] * scale
     # Reward is money at game end, full stop -- unsold shed inventory and
     # freshly-hired hands with no time left to earn back their cost are pure
     # waste in the closing days. The #1 player visibly winds crop mix back
@@ -886,7 +956,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             # built drains the day-0 cash pile that hiring/land also need.
             if (
                 len(info["empty_pasture"]) > pasture_pending
-                and remaining - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * phase_scale
+                and remaining - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * scale
             ):
                 orders.append(["BUY_ANIMAL", best, 1])
                 remaining -= ANIMALS[best]["cost"]
@@ -912,7 +982,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         hire_cost = a
         if (
             backlog > unit_count * config["hire_backlog_ratio"]
-            and remaining - config["hire_money_floor"] * phase_scale >= hire_cost * config["hire_reserve_multiple"] * phase_scale
+            and remaining - config["hire_money_floor"] * scale >= hire_cost * config["hire_reserve_multiple"] * scale
         ):
             orders.append(["HIRE"])
             remaining -= hire_cost
@@ -1000,6 +1070,7 @@ def make_agent(config):
             market_orders = _market_orders(
                 farm, private, info, cfg, prices, day,
                 opponent_supply, opponent_concentration, opponent_scale,
+                opponent_farm,
             )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, cfg, prices, state["unit_targets"]

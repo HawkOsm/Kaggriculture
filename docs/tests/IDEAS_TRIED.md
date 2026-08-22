@@ -39,6 +39,25 @@ efficiency" below — most strong opponents don't decide live at all) scale up w
 dry. A genuine forward-looking spending plan (a few days of projected income ahead, not reactive
 per-turn gates) is the untested next idea here — not attempted yet.
 
+**Update 2026-08-21 — CONFIRMED: kawa and prvsiyan are pre-solved fixed-route scripts, not live
+strategies.** Read both agents' source directly (`src/opponents/kawa_route_agent.py`,
+`_kawa_actions`, line 139; `src/opponents/prvsiyan_frontier_agent.py`, docstring literally says
+"Soil modal route", reuses `_kawa_actions` under a renamed key). Both select and replay one of a
+handful of giant hardcoded per-step action tables computed offline with full foresight of the
+whole 30-day game, with only small live patches (weed detours, feed timing, market-crash-aware
+sell ordering). This **retroactively explains every row in the table above** — a live reactive
+heuristic cannot replicate a schedule solved with perfect foresight by tuning reserve thresholds
+harder, no matter how many combinations get tried. Also reconfirmed the isolated `max_structures`
+4→16 test still regresses even with today's dispatch/CARE/stale-money fixes in place (final money
+roughly halved vs both), so this isn't an artifact of pre-fix dispatch either. **Reframe, not a
+dead end**: stop chasing kawa/prvsiyan's exact animal/pasture curve specifically — it's the wrong
+target for a live heuristic. Weight near-term comparisons toward the genuinely-live near-tier
+opponents (`rajan1673_agent`, `chaitanyajamble_agent`) instead, and treat closing the kawa/prvsiyan
+gap as a stretch goal, not a bug hunt. Separately: `best_config.json`'s `max_structures: 4` is
+still a real, independent bug (below the day-0 starting pasture count of 7, so it silently blocks
+*all* new pasture building for the entire game, confirmed via `actions.csv`) — worth fixing on its
+own merits, just not expected to close the money gap by itself. See `LOG.md`.
+
 ---
 
 ## Dispatch / routing efficiency
@@ -115,6 +134,36 @@ revenue, later." A smarter version (only force-sell near an actual hard cap — 
   spending, dispatch priority) is still static per-game, set once from config, not observed and
   reacted to per-opponent. If this pans out, the same public-tile-scan approach (concentration,
   scale) could extend to other knobs later.
+
+## Relative-wealth risk scaling (CPPI / tournament theory) — ➖ built, verified as a no-op so far
+
+Since only win/loss matters, not final margin (`docs/GAME_GUIDE.md`), the theoretically right
+target isn't "maximize expected money," it's "stay ahead of the opponent's total wealth." Two real
+finance frameworks map onto this directly: **CPPI** (`cushion = value - floor`, `risky_allocation =
+multiplier * cushion`, with the floor replaced by the opponent's total value) and **tournament
+theory / "gambling for resurrection"** (mutual fund managers trailing their peer benchmark increase
+risk to catch up; managers leading it reduce risk to lock in the win).
+
+- **🐛 Naive version undercounts opponent wealth.** First pass valued the opponent's "unrealized"
+  side using `_opponent_profile`'s existing `supply` (only already-ripe or near-ripe-within-
+  `lookahead_days` yield) — meaning a cash-poor, asset-rich opponent mid-build-out (exactly kawa/
+  prvsiyan's early game) looked artificially poor. Fixed with `_standing_asset_value`: values every
+  standing crop at its full expected yield and every live animal at its purchase cost, regardless
+  of growth stage. Confirmed via direct trace that opponent value is now visible from day 1, not
+  just near-harvest.
+- **❌ Symmetric version (loosens reserves when behind) regressed**, 8 episodes vs kawa/prvsiyan —
+  same failure mode as every other "spend more when behind" attempt in the Spending-posture section
+  above, for the same underlying reason (dispatch/execution capacity, not the trigger for spending).
+- **➖ Asymmetric version (only tightens up when ahead, `risk_scale_min=1.0`) — looked like a win at
+  4 episodes/opponent, evaporated at 10.** rajan1673 was already a clean 10W-0L at baseline; the
+  mechanism made it 9W-1L. chaitanyajamble was an unchanged 2W-8L either way. **This is a
+  methodology lesson as much as a mechanism result: a 4-episode/opponent sample is not enough to
+  trust — it flipped a losing comparison into a "clean win" that fully reversed at 10 episodes.**
+  Every other verified change this session used 6+ episodes; this one initially didn't.
+- **Current state**: kept in the code (correctly implemented, verified to compute as designed) but
+  `risk_sensitivity` defaults to `0.0` — a structural no-op — rather than a hand-picked value from
+  the debunked small sample. Left in `optimize.py`'s search space for a real search with the
+  dedicated multi-episode verification gate to find actual support, if any exists. See `LOG.md`.
 
 ## Config search (Optuna)
 
