@@ -214,3 +214,19 @@ No usable `agent(obs)` function:
   source) — reusing that as our own submission would misattribute someone else's
   strategy (and, per the reconstructing author, possibly the strategy of a person who
   never published it themselves).
+
+## Near-tier benchmark opponents (added 2026-08-22)
+
+Sourced from the public Kaggriculture leaderboard/notebooks to give the search a pool of
+opponents near our own ~500 score (the existing pool was almost entirely 1700-2700, which
+the win/loss objective saturates against). Local sparring partners only, in
+`src/opponents/`; never submitted, in whole or in part.
+
+| Module | Author | LB score | Used in default search pool |
+|---|---|---|---|
+| `umutdorukztrk_agent.py` | umutdorukztrk | 380.8 | yes |
+| `iamsdt_agent.py` | iamsdt | 398.8 | registry only (near-saturated) |
+| `kiykhoi_agent.py` | kiykhoi | 401.1 | yes |
+| `mansiaggarwal88_agent.py` | mansiaggarwal88 | 496.4 | registry only (near-saturated) |
+| `moncefelm_agent.py` | moncefelm | 442.1 | registry only — despite the author's score this agent beats our champion by ~89k |
+| `daisy023_agent.py` | daisy023 | 447.3 | yes |
