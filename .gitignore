@@ -4,6 +4,7 @@ __pycache__/
 replay.json
 kaggriculture-data/
 output/
+input/
 .claude/
 .vscode/
 v27_agents

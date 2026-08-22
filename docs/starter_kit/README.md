@@ -1,5 +1,12 @@
 # Kaggriculture Starter Kit
 
+> **Stale (2026-08-22):** this walkthrough refers to per-strategy agent files
+> (`melon_maxxer.py`, `multi_crop.py`, `quick_start_agent.py`, `robust_agent.py`) that no
+> longer exist — they were consolidated into [`src/agent.py`](../../src/agent.py), whose
+> behaviour is driven by config rather than by separate files. The CLI/setup/submit
+> workflow below is still accurate; the agent filenames are not.
+
+
 Source: https://www.kaggle.com/competitions/kaggriculture/overview ("Getting Started: Test Locally & Submit")
 and https://www.kaggle.com/code/bovard/kaggriculture-getting-started (fetched 2026-08-20)
 
