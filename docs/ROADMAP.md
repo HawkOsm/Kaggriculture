@@ -11,6 +11,14 @@ where effort goes, and — just as importantly — where it stops going.
 
 ## The honest position
 
+**Revised 2026-08-22 (later same day)** after surveying 15 public competitor agents — see
+[`PARAMETER_MODEL_FINDINGS.md`](PARAMETER_MODEL_FINDINGS.md). Two findings change this plan:
+(1) the leaderboard splits at ~1800 — **every agent above it replays a precomputed tape**, and the
+highest confirmed reactive agent scores ~2000, so ~2000 is the realistic reactive ceiling and is
+still **4x our current ~500**; (2) episodes are **fully seedable** and we have never used it,
+while the top authors tune on frozen seed panels. Seeded evaluation is now the first action in
+Phase 1, ahead of any further searching.
+
 **Where we stand.** We beat the near-tier field (`rajan1673`, `nagatakengo` are clean sweeps),
 we're roughly even with `chaitanyajamble`/`ektarr`, and we lose to the 2500+ tier by -97k to
 -142k coins. That last gap has not narrowed all session despite many attempts.
@@ -138,6 +146,7 @@ documented negative result.
 | What | Where |
 |---|---|
 | Game rules (canonical) | `GAME_GUIDE.md` |
+| Competitor parameter-model survey + recommended actions | `PARAMETER_MODEL_FINDINGS.md` |
 | Every test outcome, newest first | `tests/LOG.md` |
 | What's been tried, by concept, with verdicts | `tests/IDEAS_TRIED.md` |
 | Competitor + prior-art research | `COMPETITOR_STRATEGY_NOTES.md` |

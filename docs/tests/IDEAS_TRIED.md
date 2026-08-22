@@ -12,6 +12,27 @@ Legend: ✅ worked (kept) · ❌ regressed (reverted or never landed) · ➖ nul
 
 ## Spending posture / aggressive early investment
 
+> **⚠️ REVISED 2026-08-22 — read this before trusting the failures below.** The v14 champion was
+> promoted with `money_reserve: 140` (down from 420), `seed_money_floor: 7` (from 25) and
+> `hire_money_floor: 10` (from 60) — i.e. **the most aggressive spending posture ever promoted
+> here**, and it verified 10W-0L seeded, improved against all three held-out opponents, and won
+> 6W-0L on unseen holdout seeds. That does not make the rows below wrong, but it does change what
+> they mean, for two reasons:
+>
+> 1. **Every failure below was measured with unseeded evaluation**, whose noise floor was later
+>    measured directly: an identical config beats a copy of *itself* 3W-1L with a +1,285 margin.
+>    Several of those "regressions" may have been noise. They were not re-tested after seeding
+>    landed.
+> 2. **The v14 champion is not "spend more and hope."** It couples the low reserves with much
+>    stronger opponent reactivity (`opponent_incoming_threshold` 9 → 2, `opponent_race_discount`
+>    0.966 → 0.434) and a tighter risk band (`risk_scale_min/max` 0.89–2.35 → 1.45–1.80). The
+>    failed attempts loosened spending *in isolation*. This is a different idea that happens to
+>    share one parameter direction.
+>
+> Practical guidance: do not treat "aggressive spending" as settled-negative any more. Do still
+> check whether a proposed variant is isolated loosening (the failed pattern) or coupled with
+> reactivity (the promoted pattern) — and measure it seeded.
+
 **Consistent pattern: every attempt to spend/expand more aggressively regressed. Only waste-reduction
 fixes (below) have actually helped.** Before trying another variant of "spend more," read this section.
 
@@ -24,6 +45,7 @@ fixes (below) have actually helped.** Before trying another variant of "spend mo
 | Day-phased "go broke first 40%, revert to normal after" (`broke_phase_days_frac`/`broke_phase_reserve_scale`, real mechanic, not a strawman) | ❌ | Still regressed even with a genuine time-boxed implementation — confirms the blocker is execution capacity, not that the earlier flat version's aggression was unbounded | 2026-08-21 "implemented a genuine day-phased go broke early mechanic" |
 | Fix `target_structures`'s labor-count gating (build toward *intended* labor, not today's headcount) + raise `max_structures` | ❌ (mechanism ✅, outcome ❌) | The build-ramp fix itself works (pasture count now grows correctly, confirmed via trace) — but money still nets worse; animals lag pasture badly (12 pasture, 5 animals) | 2026-08-21 "fixed a real bug (pasture target gated on today's headcount)" |
 | Also loosen `animal_reserve_multiple` (2.18→1.1) on top of the above | ❌ (dramatically) | Buying animals faster just drains cash with no compensating income mechanism — final money crashed to 2,461 | same entry as above |
+| "Highly favor animal buying": `max_structures` 4→14 + `animal_reserve_multiple` 2.6→0.3, retested *after* the reserve-architecture rework (proportional-to-cost cushions, not a dominant flat buffer) | ❌ | Regressed against both kawa and prvsiyan at 6 episodes each, every single episode worse than baseline — the architecture fix didn't change the verdict, so it isn't that the old reserve design was artificially suppressing beneficial aggression | 2026-08-22 "tested highly favor animal buying" |
 
 **Update 2026-08-21 — production/sell-side hypothesis refuted.** Audited our own watering/harvest/
 feed/sell compliance directly (`.claude/scratch/production_audit.py`): unwatered tiles near-zero
@@ -165,6 +187,29 @@ risk to catch up; managers leading it reduce risk to lock in the win).
   the debunked small sample. Left in `optimize.py`'s search space for a real search with the
   dedicated multi-episode verification gate to find actual support, if any exists. See `LOG.md`.
 
+## Shadow pricing (labor/land opportunity cost) — 🐛✅ land kept, ❌ "will make animals win" hypothesis
+
+Prompted by an external second-opinion review (pasted into this session) recommending `lambda_labor`/
+`lambda_land` shadow prices in `_crop_score`/`_animal_score`, on the theory that correctly pricing
+labor scarcity would make animals (no watering, but real daily FEED+CARE) naturally outscore crops
+without needing `animal_enabled` hardcoded.
+
+- **✅ Land shadow pricing has real value.** A controlled Optuna search (`v10_shadow_pricing`,
+  identical setup to the `v9` solo-optimization search below except shadow pricing is now live) had
+  `lambda_land` converge to 24.9 out of an allowed [0, 80] range — a real, non-trivial value, not
+  near a boundary by accident.
+- **❌ The specific "animals will naturally win" hypothesis was not confirmed.** `lambda_labor`
+  converged to 0.45 out of [0, 15] — the search, completely free to set this coefficient to whatever
+  value would help, converged near-zero across every high-scoring trial shown (0.43-0.53 band). The
+  best trial still has `animal_enabled: false`, same as the pre-shadow-pricing baseline. Verification
+  did improve (v9's 2W-8L, avg -1,666.5 → v10's 4W-6L, avg +288.4) but not enough to promote.
+- **Best current explanation**: shadow pricing only affects the *decision* of what to plant — it
+  doesn't touch the deeper, already-established gap (see "Dispatch / routing efficiency" above) that
+  the animal pipeline (build → buy → place → feed → care → collect, six separate dispatch-tier steps
+  each competing independently for the same scarce labor) is mechanically more fragile to execute
+  reliably than crops' simpler plant → water → harvest chain, regardless of how correctly the
+  planting decision itself is priced. See `docs/tests/LOG.md` for both search results.
+
 ## Config search (Optuna)
 
 - **Four full 150-trial searches this session against the 9-opponent (2500+) pool, none promoted.**
@@ -184,6 +229,26 @@ risk to catch up; managers leading it reduce risk to lock in the win).
   margin. Once we have any non-zero win rate at all, switch primary comparison metric from
   avg-margin to win-rate — margin-based comparisons risk optimizing something the actual ranking
   doesn't reward.
+- ✅🐛 **2026-08-22 — the bullet directly above was finally acted on, having sat unactioned for a
+  long time while every search in between optimized the wrong quantity.** `evaluate_config`
+  scored risk-adjusted **raw coin margin**, but the rating system is win/loss/tie only. Since
+  kawa (~-142k) and prvsiyan (~-97k) dominate the pool average by an order of magnitude over the
+  contestable near-tier matchups (±6k..25k), "maximize average margin" mostly meant "lose
+  slightly less lopsidedly to opponents we cannot beat", which earns zero rating. Worked example
+  on a representative margin vector: improving kawa by 20k (still a loss) scored **8x better**
+  than flipping a matchup to a genuine win. Fixed by squashing margins through
+  `tanh(margin/win_scale)` (`--win-scale`, default 15000; `0` restores legacy behavior) so
+  blowouts saturate and near-boundary matchups keep gradient. tanh rather than a hard win/loss
+  indicator because at 2 episodes/opponent a 3-valued signal is too noisy for TPE and gives zero
+  gradient on a matchup where every episode loses. **Deliberate trade-off:** the search now
+  writes off kawa/prvsiyan entirely — correct for rating, but it means v12+ will not try to close
+  that gap. Study renamed `v12_winrate_objective`; **prior studies' trial values are in different
+  units and are not comparable.**
+- ✅🐛 **Objective/gate mismatch (same fix, worth its own row).** `verify_candidate`'s promotion
+  gate has always been win-based (`wins > losses`) while the objective was margin-based — **the
+  search was optimizing a different quantity from the gate it had to pass.** This retroactively
+  explains the recurring "search finds a best trial, then fails verification" pattern that runs
+  through most of this file's Optuna rows.
 
 ---
 
@@ -219,6 +284,25 @@ bottleneck, since retraining against a broken execution layer just re-learns the
 - **Rating noise**: per the discussion forum, don't judge a submission before ~60 games (~5
   hours); byte-identical agents have been reported diverging by 1000+ points purely from early
   matchmaking luck. Treat <50-point live rating swings as noise.
+- ✅🐛 **2026-08-22 — promotion gate had no out-of-sample check, and it cost us a real promotion.**
+  `verify_candidate` only ever played candidate-vs-current-champion, so a config could win that
+  head-to-head while genuinely regressing against the wider field. v11 did exactly that: 6W-4L
+  (+1,942.7) against the champion, promoted, then found to regress and reverted. Fixed with
+  `verify_holdout()` + `HOLDOUT_OPPONENTS = [chaitanyajamble, ektarr, rajan1673, nagatakengo]`,
+  held out of **every** search pool (argparse now refuses a run that puts one in `--opponents`,
+  since that silently destroys the out-of-sample property). Promotion now needs both gates.
+  Validated by replaying v11's exact params through it: correctly blocked on `ektarr` (-6,875.8
+  vs champion -2,825.5). The check asks *"is the candidate worse than the CHAMPION here"*, not
+  *"does the candidate win here"* — several holdout opponents are losing matchups for the
+  champion too, so demanding wins would reject everything. Same structural idea as the Halite IV
+  4th-place solution, which evolves against a standing pool of baseline bots plus retained older
+  genomes rather than against the current best alone (`../../input/HaliteIV_0Zeta/`).
+- ⚠️ **Beware comparing a new result against *historical* numbers in LOG.md instead of a freshly
+  measured baseline.** The v11 robustness check did this and concluded v11 had "doubled the
+  deficit" vs `chaitanyajamble`; measured side-by-side against a concurrent champion, the two
+  were within noise (-15,413 vs -14,666) — the gap was champion drift (below), not v11. The
+  revert still stood on a different, real regression, but the stated reason was wrong. Always
+  re-measure the champion in the same run as the candidate.
 
 ---
 
@@ -236,6 +320,50 @@ bottleneck, since retraining against a broken execution layer just re-learns the
   agent — check for a real `agent(obs)` function before investing further in a candidate.
 - Most strong opponents in the pool (`kawa`, `romanrozen`, likely others) are **replay-based**
   (`_ACTIONS[step]`), not live dispatchers — see "Dispatch / routing efficiency" above.
+
+---
+
+## Recurring bug class: a new mechanism's non-zero default silently mutates the champion
+
+🐛 **Found 2026-08-22, and it had already corrupted a promotion decision.** `best_config.json`
+only pins the keys a search actually wrote; every other key falls through to `DEFAULT_CONFIG`.
+So adding a new mechanism with a *non-zero* default retroactively changes the champion — it stops
+being the config that was actually verified. Shadow pricing and cash-flow lookahead shipped with
+`lambda_labor=3.0`, `lambda_land=15.0`, `income_lookahead_days=2`, `income_discount=0.7` on the
+reasoning "default to something nonzero so the mechanism does something to test against". That
+reasoning is wrong. Measured cost to the champion (4 episodes each): vs `chaitanyajamble`
+**-7,650.8 → -13,173.0**; vs `ektarr` **+173.0 → -2,317.2**. It also produced a false diagnosis
+of v11's regression (see the evaluation-methodology section). All four defaults set to 0.0/0;
+champion re-measured back in band (-6,755.0 / +683.0).
+
+**Standing rule: a new mechanism defaults to a NO-OP, and the search turns it on.** Already
+followed correctly by `opening_enabled` (False) and `broke_phase_*` (frac=0, scale=1). The
+mechanism stays fully searchable in `KNOB_SPECS`/`sample_config` — only its default changes.
+Any config key that gates behavior and isn't pinned in `best_config.json` is a live instance of
+this bug class waiting to happen.
+
+---
+
+## Scripted opening window (`opening_*`) — ➖ built, NOT yet tested
+
+Days 0-2 (steps 0-71) verified **100% deterministic** across episodes regardless of seed or
+opponent — byte-identical observations, first divergence exactly at day 3 (shop-unlock RNG *and*
+market prices together). Tracing five independently-written strong opponents in that window found
+tight convergence: wheat+melon only (never carrot/tomato/strawberry), pasture+sheep/cow only
+(never coop/geese), 4-5 hands hired on day 0, and $2,804-2,991 of the starting $3,000 spent by
+end of day 2. Full per-opponent numbers in `../../input/index.json`.
+
+Implemented as `opening_enabled` (default **False**, no-op) / `opening_days` /
+`opening_reserve_scale` / `opening_hires_day0`: relaxes the animal-buy `started_up` gate and the
+reserve cushions during the window, plus a day-0 hire target that bypasses the backlog gate
+(backlog *cannot* justify a day-0 hire — nothing is planted yet). Deliberately **not** a copy of
+any opponent's table: kawa's and prvsiyan's sources were read directly and both are absolute
+per-step movement choreography for a fixed actor count, which desyncs if any quantity changes.
+
+**Status: unverified.** Honest prior — this is still a "spend aggressively early" variant, and
+those have failed 9+ times (see the first section). Phase separation itself is independently
+corroborated by two reference winners (Halite IV's full second `EARLY_PARAMETERS` set; Lux S2's
+`END_PHASE`/`ICE_MINE_RUSH` step thresholds), which is why it was built rather than dismissed.
 
 ---
 
