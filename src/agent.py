@@ -78,15 +78,23 @@ DEFAULT_CONFIG = {
     # accumulates in the shed for the rest of the game (see
     # docs/tests/LOG.md). Some revenue at a depressed price beats zero.
     "sell_backlog_multiple": 2.5,
-    # Never spend below this bank balance, except cheap seed top-ups. Kept
-    # low deliberately: the reigning #1 player runs as low as $73-760 for
-    # the first ~10 days, pouring nearly everything into hiring/land/animals
-    # while it still compounds for the rest of the season. Not near-zero,
-    # though -- a $3000 start that's fully drained on day 0 (before any
-    # crop has had time to mature) has no buffer to survive the multi-day
-    # gap before first income, which is a real failure mode we hit tuning
-    # this (see docs/tests/LOG.md).
-    "money_reserve": 100,
+    # A small, FIXED survival floor for land/animal purchases -- never
+    # multiplied by risk_scale. This used to be the *dominant* term in
+    # those gates (`remaining - money_reserve*scale >= cost*multiple*scale`,
+    # with a champion-tuned value of 420 -- already more cash than the
+    # reigning #1 player's entire bank during the early-game window this
+    # was meant to emulate, $25-760), which meant risk_scale could only
+    # ever nudge spending caution by its own narrow bound (~11% either way)
+    # regardless of how lopsided the actual game state was -- the flat
+    # floor swallowed the signal. Reserve requirements are now purely
+    # proportional to what's being bought (see animal_reserve_multiple /
+    # land_reserve_multiple below, both scaled directly by risk_scale), so
+    # this key's only remaining job is what hire_money_floor/
+    # seed_money_floor already do: stop the agent from spending down to
+    # literal $0 and getting stuck, not express a spending *policy*. Value
+    # lowered to match that narrower job -- not yet re-verified at this
+    # magnitude, expect this to need a fresh search (see docs/tests/LOG.md).
+    "money_reserve": 40,
     # See _market_orders' phase_scale: disabled by default (frac=0 means
     # "day < 0" is never true, scale is never applied).
     "broke_phase_days_frac": 0.0,
@@ -125,10 +133,13 @@ DEFAULT_CONFIG = {
     # land. BUILD_PASTURE itself costs nothing (only the animal does), so
     # there's no cash reason to delay it.
     "pasture_target_ratio": 0.3,
-    # Extra reserve multiple required specifically before BUY_ANIMAL for a
-    # pasture ($400-500) -- much pricier than a hire, so it needs a
-    # stronger brake than hire_reserve_multiple or it drains day-0 cash
-    # before hiring/land get a turn at it.
+    # Post-purchase cash cushion required before BUY_ANIMAL, as a multiple
+    # of *this specific animal's own cost* ($400-500), scaled directly by
+    # risk_scale -- gate is `remaining >= cost + max(money_reserve,
+    # animal_reserve_multiple * risk_scale * cost)`. No longer stacks with
+    # a separate flat buffer (see money_reserve's comment) -- a bigger
+    # animal purchase now naturally demands a bigger absolute cushion
+    # without needing an independent flat number tuned separately.
     "animal_reserve_multiple": 2.5,
     "startup_days": 2,
     # Land is different: delay it a few days so hiring/seed spending on day
@@ -142,6 +153,14 @@ DEFAULT_CONFIG = {
     # footprint is actually being worked before unlocking more of a board
     # that costs real travel time to reach.
     "land_utilization_threshold": 0.75,
+    # Post-purchase cash cushion required before BUY_LAND, as a multiple of
+    # the *specific quadrant's own cost* ($1000/$2000/$4000), scaled by
+    # risk_scale -- same shape as animal_reserve_multiple, and new: land
+    # previously had no cost-scaled reserve of its own at all, just the
+    # flat money_reserve buffer directly (see that key's comment). A $4000
+    # SE quadrant now demands a proportionally bigger cushion than a $1000
+    # NE one, instead of the same flat number regardless of purchase size.
+    "land_reserve_multiple": 1.5,
     # Proactively buying fertilizer is usually not worth it -- collecting it
     # free from animals is enough once any are running. Off by default.
     "buy_fertilizer": False,
@@ -162,6 +181,89 @@ DEFAULT_CONFIG = {
     # in the same turn spread across crops instead of piling into whichever
     # one currently scores highest (self-inflicted price crash risk).
     "diversification_weight": 0.15,
+    # Shadow prices: how much a scarce unit of labor / land is worth right
+    # now, priced directly into _crop_score/_animal_score ($/day units,
+    # same as those functions' own output) rather than left implicit.
+    # Motivated by an external second-opinion review (see docs/tests/LOG.md)
+    # plus a real competitor's published formula for the land term
+    # specifically (docs/COMPETITOR_STRATEGY_NOTES.md, pilkwang's
+    # `lambda_L * g_c`). The idea: a crop that's cheap on paper but needs
+    # daily watering should score worse when workers are already backlogged,
+    # and an animal (no watering, but real daily FEED+CARE) should compete
+    # on the same footing instead of needing `animal_enabled` hardcoded on.
+    # lambda_labor multiplies a per-turn labor-scarcity signal (pending
+    # tasks per unit, same backlog formula _market_orders already uses for
+    # the hire gate); lambda_land multiplies current land utilization
+    # (occupied/unlocked).
+    #
+    # BOTH DEFAULT TO 0.0 (no-op), corrected 2026-08-22 after these shipped
+    # with nonzero defaults (3.0/15.0) "so the mechanism does something to
+    # test against". That reasoning was wrong and caused a real, measured
+    # regression: best_config.json doesn't pin these keys, so the CHAMPION
+    # silently inherited them and stopped being the config that was actually
+    # verified 9W-1L. Measured cost to the champion (4 episodes each):
+    # chaitanyajamble -7,650.8 -> -13,173.0, ektarr +173.0 -> -2,317.2. It
+    # also corrupted a promotion decision: v11's apparent "regression vs
+    # chaitanyajamble" was mostly this drift, not v11 (see docs/tests/LOG.md).
+    # Rule going forward, same as opening_enabled and broke_phase_*: a new
+    # mechanism defaults to a no-op, and the search turns it on. Anything
+    # else silently mutates the champion.
+    # crop_score's existing
+    # season_ok admissibility check (a tile with no time left to mature is
+    # never plantable at all) is a hard constraint, unchanged by this --
+    # shadow pricing only affects crops that could be planted, not whether
+    # they're allowed to be.
+    "lambda_labor": 0.0,
+    "lambda_land": 0.0,
+    # Cash-flow lookahead (see _market_orders' guaranteed_income comment):
+    # how far ahead to scan our own tiles for near-ripe/ripening yield that
+    # can offset the reserve cushion, and how much to discount its priced
+    # value before trusting it (a scripted opponent's projected income is
+    # certain; ours isn't -- price risk and execution risk both apply).
+    # Motivated by an external second-opinion review's "MPC-lite" proposal
+    # -- unverified, same status as lambda_labor/lambda_land above.
+    "income_lookahead_days": 0,
+    "income_discount": 0.0,
+    # Scripted opening window: days 0-2 (steps 0-71) are 100% deterministic
+    # regardless of opponent or seed -- confirmed empirically by diffing
+    # independent episodes' full observation stream, byte-identical through
+    # day 2, first divergence (both market prices AND town shop unlocks)
+    # exactly at day 3. Tracing 5 independently-written strong opponents
+    # (kawa, prvsiyan, boatlee_v16, rayk_c95, saiteja -- all separately
+    # confirmed fixed-route scripts) in this exact window found a tight,
+    # convergent pattern: spend nearly the entire starting $3000 by day 2,
+    # hire 4-5 hands immediately on day 0. Two concrete, isolated gaps this
+    # closes without touching crop selection or reserve architecture
+    # elsewhere: (1) `started_up`'s day-0 animal-buy block is a poor fit for
+    # a window verified safe to spend aggressively in -- see `opening_days`
+    # below; (2) the hire gate is backlog-triggered, which structurally
+    # can't fire hard on day 0 since no backlog exists before anything's
+    # been bought/planted yet -- see `opening_hires_day0`. Deliberately NOT
+    # a literal replay of any opponent's action table: read kawa's and
+    # prvsiyan's source directly, both are hardcoded per-step absolute
+    # movement choreography for a fixed actor count, which does not survive
+    # generalization to different quantities (confirmed via that reading,
+    # not assumed) -- these are reserve/gate relaxations layered on top of
+    # the EXISTING reactive dispatch/shadow-pricing engine, which already
+    # decides tile-by-tile where units walk and what they plant. `_enabled`
+    # defaults False (a no-op merged into best_config.json, unlike
+    # `broke_phase_*`'s always-on-but-inert-by-fraction pattern) so this
+    # can't silently change the current champion's behavior outside the
+    # normal ablate-then-promote pipeline -- unverified until tested.
+    "opening_enabled": False,
+    "opening_days": 3,
+    # Multiplies (not replaces) the existing risk_scale-adjusted cushion for
+    # animal/hire/land purchases specifically while `day < opening_days`, on
+    # top of `opening_enabled`'s gate on `started_up` for animals below --
+    # small rather than 0 so a purchase still leaves a trivial buffer, not
+    # because there's evidence a tighter number is unsafe (there isn't yet).
+    "opening_reserve_scale": 0.15,
+    # Day-0-only hire target that overrides (does not replace) the normal
+    # backlog-triggered gate -- see this block's own comment above for why
+    # backlog can't do this job on day 0. Still gated on affordability
+    # (remaining >= cost + the reduced opening cushion above), never forced
+    # past what's actually affordable.
+    "opening_hires_day0": 5,
     # Total in-game days (720 turns / 24 turns-per-day). Used to stop
     # planting crops whose harvest cycle wouldn't finish before season end --
     # the #1 player visibly winds crop mix back down to fast-cycle WHEAT
@@ -282,24 +384,36 @@ def _crop_cycle_days(crop):
     return max(1, c["max_yield_day"])
 
 
-def _crop_score(crop, price):
+def _crop_score(crop, price, labor_penalty=0.0, land_penalty=0.0):
+    # labor_penalty/land_penalty are shadow prices ($/day each, both default
+    # 0.0 -- no behavior change unless a caller actually computes and passes
+    # them): the opportunity cost of the daily watering labor and the tile
+    # itself, given how scarce those two things currently are. Subtracted
+    # after the existing $/day amortization (both already the same units),
+    # not folded into revenue -- a crop can score negative once labor/land
+    # are tight enough, which is the point: see _plan_units' use of this to
+    # skip planting instead of always planting whatever's "least bad."
     c = CROPS[crop]
     revenue = price * c["max_yield"]
-    return (revenue - c["seed"]) / _crop_cycle_days(crop)
+    return (revenue - c["seed"]) / _crop_cycle_days(crop) - labor_penalty - land_penalty
 
 
-def _diversified_crop_score(crop, price, crop_counts, weight):
+def _diversified_crop_score(crop, price, crop_counts, weight, labor_penalty=0.0, land_penalty=0.0):
     # Discount by how much of this crop is already growing, so several units
     # deciding what to plant in the same turn don't all pile into whichever
     # single crop currently scores highest.
-    return _crop_score(crop, price) / (1 + crop_counts.get(crop, 0) * weight)
+    return _crop_score(crop, price, labor_penalty, land_penalty) / (1 + crop_counts.get(crop, 0) * weight)
 
 
-def _animal_score(animal, price):
+def _animal_score(animal, price, labor_penalty=0.0):
     a = ANIMALS[animal]
     # Steady-state $/day once producing; ignores the wheat feed cost and the
     # ramp-up to first_yield_day, both small relative to season length.
-    return price / max(1, a["interval"])
+    # labor_penalty: same shadow-price idea as _crop_score's, in the same
+    # $/day units -- an animal needs daily FEED+CARE, not zero labor, so it
+    # isn't automatically exempt from labor scarcity just because it skips
+    # watering.
+    return price / max(1, a["interval"]) - labor_penalty
 
 
 def _base_price(item):
@@ -499,6 +613,40 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
     # rest of the game.
     season_ok = {c: day + _crop_cycle_days(c) <= config["season_days"] for c in config["crops"]}
 
+    # Shadow prices for this turn (see DEFAULT_CONFIG's lambda_labor/
+    # lambda_land comment): labor_scarcity is the same pending-tasks-per-unit
+    # signal _market_orders' hire gate already uses; land_scarcity is
+    # current occupancy of the unlocked footprint. Both 0 (no penalty) when
+    # nothing's actually backed up yet, growing as the board fills up.
+    unit_count_for_labor = 1 + len(farm.get("hands", []) or [])
+    labor_backlog = (
+        len(info["harvest"]) + len(info["water"]) + len(info["feed"])
+        + len(info["weeds"]) + len(info["fertilize"])
+    )
+    labor_scarcity = labor_backlog / max(1, unit_count_for_labor)
+    crop_labor_penalty = config["lambda_labor"] * labor_scarcity
+    land_scarcity = info["occupied"] / info["unlocked"] if info["unlocked"] > 0 else 0.0
+    crop_land_penalty = config["lambda_land"] * land_scarcity
+
+    def _best_crop(viable_crops):
+        # Shared by both crop-selection call sites (sticky continuation and
+        # fresh assignment) so shadow pricing behaves identically in both.
+        # Unlike the un-penalized version, a crop can lose here even with no
+        # competitor: if every viable crop's labor/land-adjusted score is
+        # <=0, this returns None exactly like "no viable crops" -- the tile
+        # goes unplanted this turn instead of taking whatever's least bad,
+        # freeing that labor for higher-priority tiers (feed/care/harvest)
+        # or a future turn once labor/land scarcity eases.
+        scored = [
+            (c, _diversified_crop_score(
+                c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"],
+                crop_labor_penalty, crop_land_penalty,
+            ))
+            for c in viable_crops
+        ]
+        positive = [(c, s) for c, s in scored if s > 0]
+        return max(positive, key=lambda cs: cs[1])[0] if positive else None
+
     def inv_of(idx):
         return inventories[idx] if idx < len(inventories) else {}
 
@@ -578,12 +726,7 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
                             info["pasture_count"] += 1
                 elif task_key == "empty_plant":
                     viable_crops = [c for c in crop_pool if season_ok.get(c, True)]
-                    best_crop = max(
-                        viable_crops,
-                        key=lambda c: _diversified_crop_score(
-                            c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
-                        ),
-                    ) if viable_crops else None
+                    best_crop = _best_crop(viable_crops)
                     if best_crop is not None:
                         action = act_or_move(pos, target, ["PLANT", best_crop])
                         if pos == target:
@@ -801,12 +944,15 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
     def _plant_act(idx, pos, inv, target):
         nonlocal crop_pool
         viable_crops = [c for c in crop_pool if season_ok.get(c, True)]
-        best_crop = max(
-            viable_crops,
-            key=lambda c: _diversified_crop_score(
-                c, prices.get(c, _base_price(c)), crop_counts, config["diversification_weight"]
-            ),
-        )
+        best_crop = _best_crop(viable_crops)
+        if best_crop is None:
+            # Rare: the tier-level check below already filters out turns
+            # where nothing scores positive, but per-unit diversification
+            # penalties can still push a borderline crop negative partway
+            # through this tier's batch (crop_counts grows as earlier units
+            # in the same wave commit). Don't plant something the shadow
+            # price says isn't worth it -- PASS rather than waste a seed.
+            return commit(idx, pos, target, "empty_plant", act_or_move(pos, target, ["PASS"]))
         action = commit(idx, pos, target, "empty_plant", act_or_move(pos, target, ["PLANT", best_crop]))
         claimed_this_turn.add(target)
         if pos == target:
@@ -817,9 +963,12 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
         return action
 
     def _tier_empty_plant(p):
+        # Checks profitability (_best_crop), not just admissibility
+        # (season_ok) -- avoids walking a unit all the way to a tile only to
+        # find shadow pricing says nothing's worth planting there right now.
         _assign_nearest(
             list(p), info["empty"], _plant_act, actions,
-            continue_fn=lambda: any(season_ok.get(c, True) for c in crop_pool),
+            continue_fn=lambda: _best_crop([c for c in crop_pool if season_ok.get(c, True)]) is not None,
             cost_fn=_cluster_cost,
         )
 
@@ -957,7 +1106,8 @@ def _standing_asset_value(farm, prices):
 
 
 def _market_orders(farm, private, info, config, prices, day, opponent_supply=None,
-                    opponent_concentration=None, opponent_scale=0.0, opponent_farm=None):
+                    opponent_concentration=None, opponent_scale=0.0, opponent_farm=None,
+                    our_supply=None):
     orders = []
     money = farm["money"]
     # Optional "broke phase": scale every spending reserve/gate down for the
@@ -977,7 +1127,12 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     )
     shed = private.get("shed", {}) or {}
     seeds = private.get("seeds", {}) or {}
-    started_up = day >= config["startup_days"]
+    # See DEFAULT_CONFIG's opening_enabled comment: days 0-2 are verified
+    # deterministic and 5 independent strong opponents all spend aggressively
+    # in this exact window, so it gets its own gate override + tighter
+    # cushion multiplier rather than just lowering startup_days globally.
+    in_opening = config["opening_enabled"] and day < config["opening_days"]
+    started_up = day >= config["startup_days"] or in_opening
     opponent_supply = opponent_supply or {}
     opponent_concentration = opponent_concentration or {}
 
@@ -1006,7 +1161,39 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         risk_scale = 1.0
 
     scale = phase_scale * risk_scale
-    reserve = config["money_reserve"] * scale
+    # Applied only to the animal/hire/land cushions below (never the floor,
+    # never the `remaining >= cost` half of any gate) -- see opening_enabled.
+    opening_scale = scale * config["opening_reserve_scale"] if in_opening else scale
+    # Fixed survival floor, deliberately NOT multiplied by scale -- see this
+    # key's DEFAULT_CONFIG comment. Land/animal reserve requirements below
+    # are `max(reserve_floor, multiple * scale * cost)`, so this only binds
+    # for a cheap purchase where the proportional term would round to
+    # near-nothing; it never dominates a real-sized one.
+    reserve_floor = config["money_reserve"]
+
+    # Cash-flow lookahead (see income_discount/income_lookahead_days'
+    # DEFAULT_CONFIG comment): a reactive agent needs a cash cushion because
+    # it can't otherwise distinguish "$0 in the bank, empty soil" from "$0
+    # in the bank, $600 of tomatoes ripening tomorrow" -- both look equally
+    # risky by liquid cash alone. `our_supply` is the same near-ripe/
+    # ripening-within-lookahead tile scan `_opponent_profile` already does
+    # for the opponent-awareness mechanism, reused here on our own farm
+    # (it's a generic function over "a farm dict", not opponent-specific)
+    # instead of a second, separate scan. Discounted for two real risks a
+    # scripted opponent with perfect foresight doesn't have to price in: the
+    # sale might land at a worse price than today's quote, and (unlike a
+    # precomputed route) there's no guarantee the projected labor actually
+    # arrives to harvest/sell it on schedule.
+    guaranteed_income = sum(
+        units * prices.get(item, _base_price(item)) for item, units in (our_supply or {}).items()
+    ) * config["income_discount"]
+
+    def _cushion(base_cushion):
+        # Guaranteed income can only offset the safety cushion, never let a
+        # purchase proceed without covering its own cost out of liquid cash
+        # -- that half of the gate (`remaining >= cost`) is untouched at
+        # every call site below, only the `+ cushion` term shrinks here.
+        return max(0.0, base_cushion - guaranteed_income)
     # Reward is money at game end, full stop -- unsold shed inventory and
     # freshly-hired hands with no time left to earn back their cost are pure
     # waste in the closing days. The #1 player visibly winds crop mix back
@@ -1099,9 +1286,11 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         # slot being "empty" doesn't mean nothing is already en route to it.
         if config["enable_coop"]:
             goose_pending = shed.get("GOOSE", 0) + _carried_total(private, "GOOSE")
-            if len(info["empty_coop"]) > goose_pending and remaining - reserve >= ANIMALS["GOOSE"]["cost"]:
+            goose_cost = ANIMALS["GOOSE"]["cost"]
+            goose_cushion = _cushion(max(reserve_floor, config["animal_reserve_multiple"] * opening_scale * goose_cost))
+            if len(info["empty_coop"]) > goose_pending and remaining >= goose_cost + goose_cushion:
                 orders.append(["BUY_ANIMAL", "GOOSE", 1])
-                remaining -= ANIMALS["GOOSE"]["cost"]
+                remaining -= goose_cost
         if info["empty_pasture"]:
             best = max(
                 ("COW", "SHEEP"),
@@ -1115,12 +1304,14 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             # own (higher) reserve multiple rather than sharing hiring's,
             # otherwise buying one for every empty pasture the moment it's
             # built drains the day-0 cash pile that hiring/land also need.
+            best_cost = ANIMALS[best]["cost"]
+            animal_cushion = _cushion(max(reserve_floor, config["animal_reserve_multiple"] * opening_scale * best_cost))
             if (
                 len(info["empty_pasture"]) > pasture_pending
-                and remaining - reserve >= ANIMALS[best]["cost"] * config["animal_reserve_multiple"] * scale
+                and remaining >= best_cost + animal_cushion
             ):
                 orders.append(["BUY_ANIMAL", best, 1])
-                remaining -= ANIMALS[best]["cost"]
+                remaining -= best_cost
 
     # Hire: only if there's enough pending work to keep another hand busy
     # (backlog per current unit exceeds the ratio) AND we can comfortably
@@ -1141,9 +1332,25 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         for _ in range(hires_today):
             a, b = b, a + b
         hire_cost = a
+        # hire_money_floor is its own fixed (unscaled) floor, same reason as
+        # money_reserve -- a hire is cheap enough that scaling its floor by
+        # risk_scale would barely matter either way, and keeping it fixed
+        # keeps the "own dedicated smaller floor than land/animals" property
+        # this key was originally introduced for.
+        hire_cushion = _cushion(max(config["hire_money_floor"], config["hire_reserve_multiple"] * opening_scale * hire_cost))
+        # Backlog can't justify a hire on day 0 -- nothing's been bought or
+        # planted yet, so there IS no backlog regardless of how many hands
+        # would actually be useful once the day-0 spending spree lands. This
+        # is the one gate the opening window overrides by target count
+        # rather than by relaxing a reserve multiplier, still subject to the
+        # same affordability check as any other hire.
+        opening_hire_forced = (
+            config["opening_enabled"] and day == 0
+            and hires_today < config["opening_hires_day0"]
+        )
         if (
-            backlog > unit_count * config["hire_backlog_ratio"]
-            and remaining - config["hire_money_floor"] * scale >= hire_cost * config["hire_reserve_multiple"] * scale
+            (opening_hire_forced or backlog > unit_count * config["hire_backlog_ratio"])
+            and remaining >= hire_cost + hire_cushion
         ):
             orders.append(["HIRE"])
             remaining -= hire_cost
@@ -1174,7 +1381,8 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         and 0 <= n_unlocked_extra < len(LAND_PRICES)
     ):
         next_land_cost = LAND_PRICES[n_unlocked_extra]
-        if remaining - reserve >= next_land_cost:
+        land_cushion = _cushion(max(reserve_floor, config["land_reserve_multiple"] * scale * next_land_cost))
+        if remaining >= next_land_cost + land_cushion:
             orders.append(["BUY_LAND"])
             remaining -= next_land_cost
 
@@ -1183,7 +1391,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # animal-collected fertilizer is free, buying it is a marginal spend.
     if config["buy_fertilizer"] and started_up and info["fertilize"]:
         fert_total = shed.get("FERTILIZER", 0) + _carried_total(private, "FERTILIZER")
-        if fert_total < 3 and remaining - reserve >= _base_price("FERTILIZER"):
+        if fert_total < 3 and remaining >= _base_price("FERTILIZER") + reserve_floor:
             orders.append(["BUY_PRODUCT", "FERTILIZER", 1])
             remaining -= _base_price("FERTILIZER")
 
@@ -1191,7 +1399,7 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # only when truly none is available anywhere (shed or carried), so this
     # can't re-trigger just because a unit is mid-transit with a full load.
     wheat_total = shed.get("WHEAT", 0) + _carried_total(private, "WHEAT")
-    if info["feed"] and wheat_total == 0 and remaining - reserve >= _base_price("WHEAT"):
+    if info["feed"] and wheat_total == 0 and remaining >= _base_price("WHEAT") + reserve_floor:
         orders.append(["BUY_PRODUCT", "WHEAT", min(len(info["feed"]), 3)])
         remaining -= _base_price("WHEAT")
 
@@ -1220,9 +1428,28 @@ KNOB_SPECS = [
     ("land_utilization_threshold", 0.4, 0.95, False),
     ("pasture_target_ratio", 0.0, 1.2, False),
     ("animal_reserve_multiple", 1.0, 5.0, False),
+    ("land_reserve_multiple", 0.2, 4.0, False),
     ("hire_backlog_ratio", 0.3, 4.0, False),
     ("diversification_weight", 0.0, 1.0, False),
-    ("money_reserve", 20, 500, True),
+    # Shadow prices -- see DEFAULT_CONFIG's comment. Unverified defaults,
+    # first thing this range should be searched to sanity-check.
+    ("lambda_labor", 0.0, 15.0, False),
+    ("lambda_land", 0.0, 80.0, False),
+    # Cash-flow lookahead -- see DEFAULT_CONFIG's comment. Unverified.
+    ("income_lookahead_days", 0, 5, True),
+    ("income_discount", 0.0, 1.0, False),
+    # Scripted opening window -- see DEFAULT_CONFIG's opening_enabled
+    # comment. opening_enabled itself is a bool, not searched here (same
+    # reason animal_enabled/enable_coop aren't -- this list is numeric-only,
+    # toggled separately in optimize.py's sample_config).
+    ("opening_days", 0, 5, True),
+    ("opening_reserve_scale", 0.0, 1.0, False),
+    ("opening_hires_day0", 0, 8, True),
+    # Narrowed from (20, 500) -- money_reserve is now a small fixed survival
+    # floor (see its DEFAULT_CONFIG comment), not a spending-policy buffer,
+    # so its useful range is the same scale as hire_money_floor/
+    # seed_money_floor, not the old value's magnitude.
+    ("money_reserve", 10, 150, True),
     ("max_sell_chunk", 3, 20, True),
     # sell_backlog_multiple deliberately NOT here -- it's genuinely unused by
     # _market_orders (the force-sell logic that read it was reverted, see
@@ -1369,10 +1596,11 @@ def make_agent(config=None, policy_fn=None):
             opponent_supply, opponent_concentration, opponent_scale = _opponent_profile(
                 opponent_farm, board_size, day, turn_cfg["opponent_lookahead_days"]
             )
+            our_supply, _, _ = _opponent_profile(farm, board_size, day, turn_cfg["income_lookahead_days"])
             market_orders = _market_orders(
                 farm, private, info, turn_cfg, prices, day,
                 opponent_supply, opponent_concentration, opponent_scale,
-                opponent_farm,
+                opponent_farm, our_supply,
             )
             farmer_action, hands_actions = _plan_units(
                 farm, private, board_size, day, info, turn_cfg, prices, state["unit_targets"]
