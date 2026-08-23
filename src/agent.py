@@ -161,6 +161,49 @@ DEFAULT_CONFIG = {
     # SE quadrant now demands a proportionally bigger cushion than a $1000
     # NE one, instead of the same flat number regardless of purchase size.
     "land_reserve_multiple": 1.5,
+    # ROI gate: replaces animal_reserve_multiple/land_reserve_multiple's flat
+    # "hold N times the cost in cash" cushion with an actual projected-payback
+    # check -- only buy if the animal/quadrant is expected to earn back at
+    # least roi_margin times its own cost before wind-down, using the same
+    # $/day scoring (_animal_score, _crop_score) already used to rank
+    # crops/animals elsewhere. This is the thing money_reserve's own comment
+    # already argued for (the flat multiple was never a value judgment, just
+    # a survival-margin guess) -- when enabled, the multiplier cushions above
+    # are skipped entirely and only the flat reserve_floor is used (still
+    # need SOME liquidity margin so a purchase can't spend to literal $0),
+    # so a purchase that clears the ROI bar isn't also blocked by an
+    # unrelated cash-hoarding requirement. OFF by default (no-op) per this
+    # project's rule that a new mechanism defaults inert until a real search
+    # verifies it -- NOT yet verified.
+    "roi_gate_enabled": False,
+    "roi_margin": 1.5,
+    # Phase-window gates, modeled directly on src/opponents/pilkwang_agent.py
+    # (the highest-scoring genuinely-reactive agent surveyed, see
+    # docs/PARAMETER_MODEL_FINDINGS.md) -- ADDITIVE restrictions on top of
+    # the existing land/animal gates, not a replacement (unlike
+    # roi_gate_enabled/the reserve multiples, which loosen spending and
+    # regressed twice; these only ever say "don't buy here", the one
+    # direction that's actually had verified wins in this project's history
+    # -- see docs/tests/IDEAS_TRIED.md's "Dispatch / routing efficiency"
+    # section vs. its "Spending posture" section). Three gaps this closes,
+    # each confirmed present in pilkwang's real source (not guessed):
+    # (1) land has no late-game cutoff of its own -- only the blanket
+    # wind_down_days (3 days) applies, far too late for a $1000-4000
+    # purchase to ever pay back; pilkwang requires `days_left >= 12`.
+    # (2) animals have no day-based cutoff independent of wind-down either;
+    # pilkwang hard-stops new animal purchases after day 18
+    # (ANIMAL_PURCHASE_LAST_DAY) regardless of cash/pasture availability.
+    # (3) neither gate reacts to whether the CURRENT footprint is already
+    # backlogged -- pilkwang's CRISIS phase pauses new land/animal capital
+    # spending whenever at-risk items exceed available labor, so it never
+    # buys more than the dispatcher can service (the exact failure mode
+    # behind every "spend more" regression this session, and this session's
+    # own roi_gate_enabled/land_reserve_multiple experiments). OFF by
+    # default (no-op) per this project's rule -- NOT yet verified.
+    "phase_gate_enabled": False,
+    "land_min_days_left": 12,
+    "animal_purchase_last_day": 18,
+    "crisis_backlog_ratio": 2.5,
     # Proactively buying fertilizer is usually not worth it -- collecting it
     # free from animals is enough once any are running. Off by default.
     "buy_fertilizer": False,
@@ -277,6 +320,19 @@ DEFAULT_CONFIG = {
     # If the opponent's public tiles show a crop about to ripen in bulk,
     # sell ours first -- their harvest dump will crash the price shortly
     # after, so getting ahead of it captures the higher price.
+    # Relative-wealth risk scale. RESTORED 2026-08-22 after a prior session
+    # deleted it: `wealth_margin_scale` was the single highest-importance
+    # parameter in the v14 search (0.204) and a real promoted effect in that
+    # champion, so deleting the mechanism discarded the strongest measured
+    # signal we had. Restored behind a toggle that defaults False -- per the
+    # standing rule, a restored/new mechanism is a NO-OP by default and the
+    # search decides. risk_sensitivity 0.0 is independently a no-op too, so
+    # this is off twice over until a search turns it on.
+    "relative_wealth_enabled": False,
+    "wealth_margin_scale": 3000.0,
+    "risk_sensitivity": 0.0,
+    "risk_scale_min": 1.0,
+    "risk_scale_max": 2.0,
     "opponent_awareness_enabled": True,
     "opponent_incoming_threshold": 3,
     "opponent_race_discount": 0.7,
@@ -288,53 +344,37 @@ DEFAULT_CONFIG = {
     # opponent. An ablation found the single best static discount for one
     # opponent was a clear loss against a different one (docs/tests/LOG.md).
     "opponent_concentration_sensitivity": 0.3,
-    # Relative-wealth risk scaling: coin margin at game end doesn't matter,
-    # only win/loss (docs/GAME_GUIDE.md) -- so the right target isn't "max
-    # expected money," it's "stay ahead of the opponent's total wealth."
-    # This mirrors two real finance ideas: (1) CPPI (constant proportion
-    # portfolio insurance) -- cushion = value - floor, risky_allocation =
-    # multiplier * cushion -- adapted so the floor is the opponent's total
-    # value instead of a fixed capital line; (2) tournament-theory "gambling
-    # for resurrection" in mutual fund management -- funds trailing their
-    # peer benchmark increase risk to catch up, funds leading it reduce risk
-    # to lock in the win, the mirror image of CPPI's proportional-with-
-    # cushion scaling (see docs/tests/LOG.md for the citations). Both sides'
-    # "total value" is money (public, docs/GAME_GUIDE.md: farm dicts are
-    # public for both players) plus `_standing_asset_value`'s full
-    # mark-to-market of every standing crop/animal, not just near-ripe ones.
-    #
-    # NOT verified to help. A first pass (narrower asset valuation, min=0.4
-    # symmetric) regressed; a follow-up (this valuation, min=1.0 asymmetric)
-    # looked like a real win at 4 episodes/opponent (rajan1673 3W-1L->4W-0L,
-    # chaitanyajamble 1W-3L->2W-2L) but **evaporated at 10 episodes**
-    # (rajan1673 was already a clean 10W-0L at baseline -- the mechanism
-    # made it 9W-1L; chaitanyajamble was an unchanged 2W-8L either way). The
-    # 4-episode result was noise, not signal -- see docs/tests/LOG.md. Left
-    # wired up (a legitimate, correctly-implemented mechanism, confirmed via
-    # direct trace to compute margin/risk_scale as designed) but
-    # risk_sensitivity defaults to 0 below, making this a structural no-op
-    # until a real Optuna search with the dedicated multi-episode
-    # verification gate finds actual support for a nonzero value -- not
-    # something to hand-pick from a small sample again.
-    "relative_wealth_enabled": True,
-    # Dollar scale that normalizes the money margin into a fraction before
-    # it hits risk_sensitivity -- keeps the effect proportionate whether the
-    # margin is a day-3 $200 gap or a day-25 $20,000 one.
-    "wealth_margin_scale": 3000.0,
-    # 0 = no-op (risk_scale always exactly 1.0, identical to the mechanism
-    # being off). See the relative_wealth_enabled comment above for why this
-    # isn't a hand-picked nonzero default yet.
-    "risk_sensitivity": 0.0,
-    # Multiplier floor/ceiling on every reserve-style spending gate (money
-    # reserve, hire floor/reserve, animal reserve). min=1.0 rather than a
-    # theory-symmetric <1 -- see relative_wealth_enabled's comment: the
-    # symmetric "loosen when behind" version tested strictly worse, since
-    # "spend more when behind" is the same intervention that's already
-    # regressed 8 separate times this session for reasons unrelated to what
-    # triggers it (see docs/tests/IDEAS_TRIED.md, "Spending posture") --
-    # our current dispatch/execution capacity can't productively absorb it.
-    "risk_scale_min": 1.0,
-    "risk_scale_max": 2.0,
+    # Item-holding race/crash mechanic, replacing the earlier total-wealth
+    # CPPI risk-scale (removed 2026-08-22 -- see docs/tests/LOG.md): that
+    # mechanism scaled every reserve gate by *total* money+asset margin vs.
+    # the opponent, which the project owner judged the wrong signal --
+    # "opponent money based" rather than reacting to what actually matters,
+    # per-item exposure. Only win/loss at game end is scored, not coin
+    # margin (docs/GAME_GUIDE.md), so if the opponent is sitting on
+    # significantly more near-ripe/ripening supply of an item than we are,
+    # deliberately dumping our own (smaller) holding early can crash the
+    # price before their bigger dump lands -- their loss on the crashed
+    # price for their larger exposure plausibly exceeds our own loss on our
+    # smaller one, a net gain in relative standing even though our own
+    # absolute revenue on that item drops. Distinct from the existing
+    # opponent_race_discount below (which only lowers our own sell-price bar
+    # so we sell before their crash -- purely defensive); this is the
+    # offensive version: cause a bigger crash than we'd otherwise choose to.
+    # OFF by default, per this project's rule that a new mechanism defaults
+    # to a no-op until a real search finds support for it (see
+    # opening_enabled/lambda_labor's comments) -- NOT yet verified.
+    "crash_sell_enabled": False,
+    # Minimum raw unit gap (opponent_exposure - our_exposure) required to
+    # trigger a crash -- avoids reacting to a trivial 1-2 unit difference.
+    "crash_sell_margin": 5,
+    # Opponent's exposure must also be at least this many times ours --
+    # combined with crash_sell_margin so neither a small ratio on a big pile
+    # nor a big ratio on a trivial pile alone can trigger it.
+    "crash_sell_multiplier": 1.5,
+    # Dump size once triggered, bypassing max_sell_chunk and the normal
+    # price threshold entirely -- the point is to move the price, not to
+    # sell profitably this turn.
+    "crash_sell_chunk": 50,
     # _plan_units' dispatch tiers execute in descending-weight order, sorted
     # fresh each turn -- a real number per tier (flat keys, like every other
     # tunable knob here, so KNOB_SPECS/optimize.py's search space can pick
@@ -361,6 +401,15 @@ DEFAULT_CONFIG = {
     "priority_weight_weeds": 20.0,
     "priority_weight_empty_build": 15.0,
     "priority_weight_empty_plant": 10.0,
+    # Penalty weight (per tile of distance to the nearest shed tile) added to
+    # _cluster_cost's tile-claim ranking for empty_build/empty_plant -- 0.0
+    # (default, unchanged behavior) means claims are ranked purely by
+    # distance-to-unit and local-neighbor clustering, same as before this
+    # existed; a real trace analysis (docs/tests/LOG.md, 2026-08-22) found
+    # occupied-tile distance from the shed drifts +3.57 tiles on average
+    # from game start to end, so a positive value here is expected to help,
+    # but that's not yet verified by an actual search/promotion.
+    "cluster_shed_weight": 0.0,
 }
 
 PRIORITY_TIER_NAMES = (
@@ -414,6 +463,41 @@ def _animal_score(animal, price, labor_penalty=0.0):
     # isn't automatically exempt from labor scarcity just because it skips
     # watering.
     return price / max(1, a["interval"]) - labor_penalty
+
+
+def _animal_roi_ok(animal, price, day, config):
+    """See DEFAULT_CONFIG's roi_gate_enabled comment: only worth buying if
+    its steady-state $/day rate can earn back roi_margin x its own cost in
+    the days actually left before wind-down, accounting for the ramp-up to
+    first_yield_day (an animal placed today earns nothing until then)."""
+    a = ANIMALS[animal]
+    usable_days = config["season_days"] - day - a["first_yield_day"] - config["wind_down_days"]
+    if usable_days <= 0:
+        return False
+    projected_revenue = _animal_score(animal, price) * usable_days
+    return projected_revenue >= a["cost"] * config["roi_margin"]
+
+
+def _land_roi_ok(cost, day, n_quadrants, unlocked_tiles, config, prices):
+    """See DEFAULT_CONFIG's roi_gate_enabled comment. Land itself produces
+    nothing -- its value is the extra tiles it unlocks, priced at the best
+    $/day rate currently achievable (same _crop_score/_animal_score used to
+    rank what to plant) times land_utilization_threshold (the fraction of a
+    new quadrant this config already assumes will actually get worked,
+    reused here rather than assuming 100% occupancy from day one)."""
+    tiles_per_quadrant = unlocked_tiles / max(1, n_quadrants)
+    best_rate = 0.0
+    for crop in config["crops"]:
+        best_rate = max(best_rate, _crop_score(crop, prices.get(crop, _base_price(crop))))
+    if config["animal_enabled"]:
+        for animal in ("COW", "SHEEP"):
+            product = ANIMALS[animal]["product"]
+            best_rate = max(best_rate, _animal_score(animal, prices.get(product, _base_price(product))))
+    usable_days = config["season_days"] - day - config["wind_down_days"]
+    if usable_days <= 0 or best_rate <= 0:
+        return False
+    projected_value = tiles_per_quadrant * config["land_utilization_threshold"] * best_rate * usable_days
+    return projected_value >= cost * config["roi_margin"]
 
 
 def _base_price(item):
@@ -907,7 +991,11 @@ def _plan_units(farm, private, board_size, day, info, config, prices, unit_targe
 
     def _cluster_cost(pos, target):
         d = abs(pos[0] - target[0]) + abs(pos[1] - target[1])
-        return d - CLUSTER_BONUS * _occupied_neighbors(target[0], target[1])
+        shed_dist = min(abs(target[0] - sx) + abs(target[1] - sy) for sx, sy in shed_spots)
+        return (
+            d - CLUSTER_BONUS * _occupied_neighbors(target[0], target[1])
+            + config["cluster_shed_weight"] * shed_dist
+        )
 
     # Build pasture (or coop, if enabled) capacity in step with current
     # labor. Ranked above planting by default: BUILD_PASTURE is free, so
@@ -1136,19 +1224,14 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     opponent_supply = opponent_supply or {}
     opponent_concentration = opponent_concentration or {}
 
-    # Relative-wealth risk scale (see DEFAULT_CONFIG's relative_wealth_enabled
-    # comment for the CPPI / tournament-theory framing): margin = our total
-    # value minus the opponent's, both money + `_standing_asset_value`'s
-    # full mark-to-market of every standing crop/animal, not just near-ripe
-    # ones -- an opponent mid-way through a build-out (cash-poor, asset-rich)
-    # needs to register as a real threat, not look artificially behind.
-    # margin > 0 (we're ahead) pushes risk_scale above 1 -- every reserve
-    # gate gets stricter, since a bigger lead doesn't score any higher, only
-    # losing the lead would hurt. risk_scale_min is clamped to 1.0 by
-    # default (see that key's own comment for why the symmetric <1 "loosen
-    # when behind" version was tested and reverted). opponent_farm is None
-    # when there's no opponent to compare against (e.g. a solo sanity check)
-    # -- risk_scale stays at a neutral 1.0 in that case.
+    # Relative-wealth risk scale. RESTORED 2026-08-22 after a prior session
+    # deleted the mechanism: it was the single highest-importance parameter in
+    # the v14 search (wealth_margin_scale, importance 0.204) and a real
+    # promoted effect in that champion, so removing it discarded the strongest
+    # measured signal we had. Now behind an explicit toggle so the search can
+    # decide rather than either of us assuming. margin > 0 (we're ahead)
+    # pushes risk_scale above 1, tightening every reserve gate -- a bigger
+    # lead scores no higher, only losing it hurts.
     if config["relative_wealth_enabled"] and opponent_farm is not None:
         our_value = money + _standing_asset_value(farm, prices)
         opp_value = opponent_farm.get("money", 0) + _standing_asset_value(opponent_farm, prices)
@@ -1204,6 +1287,21 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # will never be realized.
     winding_down = config["season_days"] - day <= config["wind_down_days"]
 
+    # See DEFAULT_CONFIG's phase_gate_enabled comment: pauses new land/animal
+    # capital spending (not hiring -- more hands is the actual fix for this)
+    # whenever pending work already exceeds current labor, same backlog
+    # formula the HIRE gate below uses, so a turn already drowning in
+    # unfed/unwatered/unharvested tiles doesn't also buy more capacity the
+    # dispatcher has no chance of servicing this season.
+    in_crisis = False
+    if config["phase_gate_enabled"]:
+        unit_count_now = 1 + len(farm.get("hands", []) or [])
+        crisis_backlog = (
+            len(info["harvest"]) + len(info["water"]) + len(info["feed"])
+            + len(info["weeds"]) + len(info["fertilize"])
+        )
+        in_crisis = crisis_backlog > unit_count_now * config["crisis_backlog_ratio"]
+
     # Sell everything sellable that's above threshold, in bounded chunks.
     # If the opponent's about to dump a lot of this item on the market
     # (visible from their public tiles), lower our own bar so we sell into
@@ -1231,6 +1329,21 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
         # revisited later.
         price = prices.get(item, _base_price(item))
         threshold = sell_fraction * _base_price(item)
+        # Offensive crash: if the opponent's exposure to this item clearly
+        # exceeds ours (both in absolute gap and ratio -- see
+        # crash_sell_margin/crash_sell_multiplier's DEFAULT_CONFIG comment),
+        # dump our smaller holding to depress the price ahead of their
+        # bigger one landing, ignoring the normal price threshold/chunk
+        # size entirely -- the point is to move the price, not sell well.
+        if config["crash_sell_enabled"]:
+            opp_exposure = opponent_supply.get(item, 0)
+            our_exposure = (our_supply or {}).get(item, 0) + qty
+            if (
+                opp_exposure - our_exposure >= config["crash_sell_margin"]
+                and opp_exposure >= our_exposure * config["crash_sell_multiplier"]
+            ):
+                orders.append(["SELL", item, min(qty, config["crash_sell_chunk"])])
+                continue
         if config["opponent_awareness_enabled"] and opponent_supply.get(item, 0) >= config["opponent_incoming_threshold"]:
             # How hard to race the opponent's incoming dump isn't one fixed
             # number -- it scales with how much of a threat THIS dump
@@ -1280,15 +1393,24 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     # rather than treating land expansion as the priority -- land moved
     # below hire/animal in this ordering to match, and to make sure animal
     # purchases get first claim on `remaining` each turn instead of last.
-    if config["animal_enabled"] and started_up and not winding_down:
+    animal_phase_ok = not in_crisis and (
+        not config["phase_gate_enabled"] or day <= config["animal_purchase_last_day"]
+    )
+    if config["animal_enabled"] and started_up and not winding_down and animal_phase_ok:
         # Only buy up to the number of slots that are actually empty, minus
         # whatever's already bought-but-not-placed (shed + carried) -- a
         # slot being "empty" doesn't mean nothing is already en route to it.
         if config["enable_coop"]:
             goose_pending = shed.get("GOOSE", 0) + _carried_total(private, "GOOSE")
             goose_cost = ANIMALS["GOOSE"]["cost"]
-            goose_cushion = _cushion(max(reserve_floor, config["animal_reserve_multiple"] * opening_scale * goose_cost))
-            if len(info["empty_coop"]) > goose_pending and remaining >= goose_cost + goose_cushion:
+            if config["roi_gate_enabled"]:
+                goose_price = prices.get(ANIMALS["GOOSE"]["product"], _base_price(ANIMALS["GOOSE"]["product"]))
+                goose_ok = _animal_roi_ok("GOOSE", goose_price, day, config)
+                goose_cushion = _cushion(reserve_floor)
+            else:
+                goose_ok = True
+                goose_cushion = _cushion(max(reserve_floor, config["animal_reserve_multiple"] * opening_scale * goose_cost))
+            if goose_ok and len(info["empty_coop"]) > goose_pending and remaining >= goose_cost + goose_cushion:
                 orders.append(["BUY_ANIMAL", "GOOSE", 1])
                 remaining -= goose_cost
         if info["empty_pasture"]:
@@ -1305,9 +1427,16 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
             # otherwise buying one for every empty pasture the moment it's
             # built drains the day-0 cash pile that hiring/land also need.
             best_cost = ANIMALS[best]["cost"]
-            animal_cushion = _cushion(max(reserve_floor, config["animal_reserve_multiple"] * opening_scale * best_cost))
+            if config["roi_gate_enabled"]:
+                best_price = prices.get(ANIMALS[best]["product"], _base_price(ANIMALS[best]["product"]))
+                animal_ok = _animal_roi_ok(best, best_price, day, config)
+                animal_cushion = _cushion(reserve_floor)
+            else:
+                animal_ok = True
+                animal_cushion = _cushion(max(reserve_floor, config["animal_reserve_multiple"] * opening_scale * best_cost))
             if (
-                len(info["empty_pasture"]) > pasture_pending
+                animal_ok
+                and len(info["empty_pasture"]) > pasture_pending
                 and remaining >= best_cost + animal_cushion
             ):
                 orders.append(["BUY_ANIMAL", best, 1])
@@ -1374,15 +1503,32 @@ def _market_orders(farm, private, info, config, prices, day, opponent_supply=Non
     n_unlocked_extra = len(farm.get("unlocked_quadrants", ["NW"])) - 1
     unlocked = info["unlocked"]
     utilization = info["occupied"] / unlocked if unlocked > 0 else 0
+    land_phase_ok = not in_crisis and (
+        not config["phase_gate_enabled"]
+        or config["season_days"] - day >= config["land_min_days_left"]
+    )
     if (
         not winding_down
+        and land_phase_ok
         and day >= config["land_startup_days"]
         and utilization >= config["land_utilization_threshold"]
         and 0 <= n_unlocked_extra < len(LAND_PRICES)
     ):
         next_land_cost = LAND_PRICES[n_unlocked_extra]
-        land_cushion = _cushion(max(reserve_floor, config["land_reserve_multiple"] * scale * next_land_cost))
-        if remaining >= next_land_cost + land_cushion:
+        if config["roi_gate_enabled"]:
+            land_ok = _land_roi_ok(next_land_cost, day, n_unlocked_extra + 1, unlocked, config, prices)
+            land_cushion = _cushion(reserve_floor)
+        else:
+            land_ok = True
+            # opening_scale, not scale -- found 2026-08-22 (audit): every other
+            # cushion (animal, hire) already gets the opening-window discount,
+            # land was the one missed. Currently a no-op for the live champion
+            # (land_startup_days=6 > opening_days=1, so land structurally can't
+            # fire during the opening window at all) but that relationship is
+            # not enforced anywhere -- a future search sampling land_startup_days
+            # low would have silently skipped the discount everything else gets.
+            land_cushion = _cushion(max(reserve_floor, config["land_reserve_multiple"] * opening_scale * next_land_cost))
+        if land_ok and remaining >= next_land_cost + land_cushion:
             orders.append(["BUY_LAND"])
             remaining -= next_land_cost
 
@@ -1429,6 +1575,14 @@ KNOB_SPECS = [
     ("pasture_target_ratio", 0.0, 1.2, False),
     ("animal_reserve_multiple", 1.0, 5.0, False),
     ("land_reserve_multiple", 0.2, 4.0, False),
+    # ROI payback gate -- see DEFAULT_CONFIG's roi_gate_enabled comment. New,
+    # unverified; when enabled this replaces the two multiples above.
+    ("roi_margin", 1.0, 3.0, False),
+    # Phase-window gates -- see DEFAULT_CONFIG's phase_gate_enabled comment.
+    # New, unverified; additive on top of the existing gates.
+    ("land_min_days_left", 0, 20, True),
+    ("animal_purchase_last_day", 5, 27, True),
+    ("crisis_backlog_ratio", 0.5, 6.0, False),
     ("hire_backlog_ratio", 0.3, 4.0, False),
     ("diversification_weight", 0.0, 1.0, False),
     # Shadow prices -- see DEFAULT_CONFIG's comment. Unverified defaults,
@@ -1449,6 +1603,11 @@ KNOB_SPECS = [
     # floor (see its DEFAULT_CONFIG comment), not a spending-policy buffer,
     # so its useful range is the same scale as hire_money_floor/
     # seed_money_floor, not the old value's magnitude.
+    # Relative-wealth knobs, restored 2026-08-22 (see relative_wealth_enabled).
+    ("wealth_margin_scale", 500.0, 10000.0, False),
+    ("risk_sensitivity", 0.0, 2.0, False),
+    ("risk_scale_min", 0.7, 1.5, False),
+    ("risk_scale_max", 1.0, 4.0, False),
     ("money_reserve", 10, 150, True),
     ("max_sell_chunk", 3, 20, True),
     # sell_backlog_multiple deliberately NOT here -- it's genuinely unused by
@@ -1457,13 +1616,14 @@ KNOB_SPECS = [
     # burns a real dimension on a knob with zero behavioral effect. Stays in
     # DEFAULT_CONFIG in case a smarter version of the idea gets revisited.
     ("opponent_concentration_sensitivity", 0.0, 1.0, False),
-    ("wealth_margin_scale", 500.0, 10000.0, False),
-    ("risk_sensitivity", 0.0, 2.0, False),
-    # Narrowed to >=0.7 after direct verification found <1.0 (loosening
-    # reserves when behind) regresses -- see risk_scale_min's DEFAULT_CONFIG
-    # comment and docs/tests/IDEAS_TRIED.md.
-    ("risk_scale_min", 0.7, 1.5, False),
-    ("risk_scale_max", 1.0, 4.0, False),
+    # Item-holding crash-sell mechanic -- see DEFAULT_CONFIG's
+    # crash_sell_enabled comment. New, unverified.
+    ("crash_sell_margin", 1, 20, True),
+    ("crash_sell_multiplier", 1.0, 3.0, False),
+    ("crash_sell_chunk", 10, 100, True),
+    # Shed-distance tile-placement penalty -- see DEFAULT_CONFIG's
+    # cluster_shed_weight comment. New, unverified.
+    ("cluster_shed_weight", 0.0, 2.0, False),
 ] + [
     # One entry per dispatch tier (see DEFAULT_CONFIG's priority_weight_*
     # comment) -- generated from PRIORITY_TIER_NAMES so this list can't

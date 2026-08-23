@@ -24,8 +24,10 @@ sys.path.insert(0, str(HERE))
 FARM_UTILS_FUNCS = ["step_toward", "closest", "act_or_move", "shed_tiles"]
 ROBUST_AGENT_FUNCS = [
     "_crop_cycle_days", "_crop_score", "_diversified_crop_score", "_animal_score",
+    "_animal_roi_ok", "_land_roi_ok",
     "_base_price", "_plant_harvest_ready", "_scan_farm", "_assign_nearest", "_plan_units",
-    "_carried_total", "_opponent_profile", "_standing_asset_value", "_dynamic_sell_fraction", "_market_orders",
+    "_carried_total", "_opponent_profile", "_dynamic_sell_fraction", "_market_orders",
+    "_standing_asset_value",
 ]
 # Module-level dicts _plan_units depends on (not `def`s, so _extract_funcs
 # below can't see them). _check_completeness below catches a name missing

@@ -175,9 +175,42 @@ DEFAULT_STORAGE = f"sqlite:///{OPTUNA_DIR / 'optuna_study.db'}"
 # holdout rotation now varies the pool per rotation index). Different pool
 # means a different objective, so v13 trial values are not comparable.
 # Rotation index is auto-appended to this name at runtime (_rot<N>).
-DEFAULT_STUDY_NAME = "robust_agent_config_v14_variants_rotation"
+#
+# Renamed a tenth time (2026-08-22): search-space shape changed again --
+# removed the 4 relative-wealth knobs (wealth_margin_scale/risk_sensitivity/
+# risk_scale_min/risk_scale_max; the mechanism itself, a real promoted
+# effect in v14's champion, not a no-op, was deleted from agent.py) and
+# added 5 new ones (crash_sell_enabled/crash_sell_margin/
+# crash_sell_multiplier/crash_sell_chunk/cluster_shed_weight -- see
+# docs/tests/LOG.md). Same MedianPruner-contamination reasoning as every
+# rename above: v14's trial history was never scored on this shape.
+# Renamed an eleventh time (2026-08-22): the relative-wealth mechanism was
+# restored (it had been deleted, despite wealth_margin_scale being the single
+# highest-importance parameter of the v14 search at 0.204) and is now searched
+# as an explicit toggle plus 4 shape knobs. Search-space shape changed, so v15
+# trial values are not comparable -- same MedianPruner reasoning as every
+# rename above. Restored code is a verified no-op at its defaults (identical
+# rewards on fixed seeds vs the pre-restore agent).
+# Renamed a twelfth time (2026-08-22), same day: fixed a MedianPruner bug
+# discovered by auditing v16's own result (see git history / LOG.md) --
+# n_warmup_steps=1 let a trial be pruned after its first of 16 episodes,
+# starving any delayed-payoff strategy. animal_enabled=True was sampled in
+# only 6% of all 2000 v16 trials (not 50%) because early animal trials got
+# killed before their investment paid off, and TPE learned from that to stop
+# sampling the arm. v16's "animals are useless" conclusion is void -- the
+# search never fairly evaluated the option. n_warmup_steps now covers a full
+# pass over the opponent pool before any pruning decision. This changes which
+# trials survive to be compared, so v16's pruning history is not reusable.
+DEFAULT_STUDY_NAME = "robust_agent_config_v17_pruner_fix"
 #
 # --- superseded reasoning, kept for context ---
+# DEFAULT_STUDY_NAME = "robust_agent_config_v16_relwealth_restored"  # superseded, see above
+#
+# --- superseded reasoning, kept for context ---
+# DEFAULT_STUDY_NAME = "robust_agent_config_v15_crash_sell_shed_cluster"  # superseded, see above
+#
+# --- superseded reasoning, kept for context ---
+# DEFAULT_STUDY_NAME = "robust_agent_config_v14_variants_rotation"  # superseded, see above
 # DEFAULT_STUDY_NAME = "robust_agent_config_v13_seeded_neartier"  # superseded, see above
 #
 # --- superseded reasoning, kept for context ---
@@ -322,6 +355,18 @@ def sample_config(trial):
         # animal_reserve_multiple -- previously land only used the flat
         # money_reserve buffer directly (see agent.py DEFAULT_CONFIG).
         "land_reserve_multiple": trial.suggest_float("land_reserve_multiple", 0.2, 4.0),
+        # ROI payback gate, replacing animal_reserve_multiple/
+        # land_reserve_multiple's flat cushion with a projected-payback
+        # check when enabled (see agent.py DEFAULT_CONFIG's
+        # roi_gate_enabled comment). New, unverified.
+        "roi_gate_enabled": trial.suggest_categorical("roi_gate_enabled", [True, False]),
+        "roi_margin": trial.suggest_float("roi_margin", 1.0, 3.0),
+        # Phase-window gates, modeled on pilkwang_agent.py -- see agent.py
+        # DEFAULT_CONFIG's phase_gate_enabled comment. New, unverified.
+        "phase_gate_enabled": trial.suggest_categorical("phase_gate_enabled", [True, False]),
+        "land_min_days_left": trial.suggest_int("land_min_days_left", 0, 20),
+        "animal_purchase_last_day": trial.suggest_int("animal_purchase_last_day", 5, 27),
+        "crisis_backlog_ratio": trial.suggest_float("crisis_backlog_ratio", 0.5, 6.0),
         "startup_days": trial.suggest_int("startup_days", 0, 8),
         "buy_fertilizer": trial.suggest_categorical("buy_fertilizer", [True, False]),
         "hire_backlog_ratio": trial.suggest_float("hire_backlog_ratio", 0.3, 4.0),
@@ -356,17 +401,28 @@ def sample_config(trial):
         "opponent_concentration_sensitivity": trial.suggest_float("opponent_concentration_sensitivity", 0.0, 1.0),
         "opponent_lookahead_days": trial.suggest_int("opponent_lookahead_days", 0, 5),
         "crop_profile": trial.suggest_categorical("crop_profile", sorted(CROP_PROFILES.keys())),
-        # Relative-wealth risk scale (see agent.py DEFAULT_CONFIG's
-        # relative_wealth_enabled comment) -- fixed on, same reasoning as
-        # opponent_awareness_enabled above: the shape knobs below already
-        # reduce to a no-op at risk_sensitivity=0, so there's no reason to
-        # let a noisy trial disable the whole mechanism instead of just
-        # tuning it toward flat.
-        "relative_wealth_enabled": True,
+        # Item-holding crash-sell mechanic, replacing the removed
+        # relative-wealth CPPI risk scale (see agent.py DEFAULT_CONFIG's
+        # crash_sell_enabled comment) -- searched as a togglable bool, same
+        # as opening_enabled, since it's a genuinely new/unverified
+        # mechanism rather than one already known to help.
+        "crash_sell_enabled": trial.suggest_categorical("crash_sell_enabled", [True, False]),
+        # Relative-wealth mechanism, restored 2026-08-22 after a prior session
+        # deleted it despite it being the highest-importance parameter of the
+        # v14 search (0.204). Searched as a toggle + 4 shape knobs so the
+        # search decides whether it earns its place, rather than either of us
+        # assuming from one run.
+        "relative_wealth_enabled": trial.suggest_categorical("relative_wealth_enabled", [True, False]),
         "wealth_margin_scale": trial.suggest_float("wealth_margin_scale", 500.0, 10000.0),
         "risk_sensitivity": trial.suggest_float("risk_sensitivity", 0.0, 2.0),
         "risk_scale_min": trial.suggest_float("risk_scale_min", 0.7, 1.5),
         "risk_scale_max": trial.suggest_float("risk_scale_max", 1.0, 4.0),
+        "crash_sell_margin": trial.suggest_int("crash_sell_margin", 1, 20),
+        "crash_sell_multiplier": trial.suggest_float("crash_sell_multiplier", 1.0, 3.0),
+        "crash_sell_chunk": trial.suggest_int("crash_sell_chunk", 10, 100),
+        # Shed-distance tile-placement penalty -- see agent.py
+        # DEFAULT_CONFIG's cluster_shed_weight comment. New, unverified.
+        "cluster_shed_weight": trial.suggest_float("cluster_shed_weight", 0.0, 2.0),
     }
     # One float knob per _plan_units dispatch tier -- lets the search find a
     # better task-priority order instead of it only changing when someone
@@ -776,7 +832,22 @@ def main():
         storage=args.storage,
         direction="maximize",
         sampler=optuna.samplers.TPESampler(),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1),
+        # n_warmup_steps was 1 -- a trial could be pruned after its FIRST of 16
+        # episodes (len(opponents)*episodes_per_opponent), a single opponent
+        # single episode compared against the running median. Confirmed to
+        # starve any delayed-payoff strategy: animal_enabled=True scored worse
+        # on average at step 0 (upfront cash cost, no payoff yet), got pruned
+        # disproportionately early, and TPE -- which learns from pruned trials
+        # too -- all but stopped sampling it: 6% of all 2000 samples in the
+        # v16 run, cascading to 1.5% of completions. Not "the search rejected
+        # animals" -- the search never fairly evaluated them. Raised to give
+        # every trial a full pass over the opponent pool before any pruning
+        # decision, so an investment that pays off by opponent 3 isn't killed
+        # for looking weak against opponent 1.
+        pruner=optuna.pruners.MedianPruner(
+            n_startup_trials=5,
+            n_warmup_steps=len(opponent_names) * args.episodes_per_opponent,
+        ),
         load_if_exists=True,
     )
 
