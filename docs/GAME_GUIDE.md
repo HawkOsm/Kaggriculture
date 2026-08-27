@@ -87,6 +87,18 @@ All plants must be watered daily (weed after 2 consecutive missed days). All ani
 - On a scheduled production day, if fed, the entire banked bonus is added to that yield (plus base 1), then resets to 0.
 - If unfed on a production day, base 1 is still produced but the bank is discarded.
 - Bank is indirectly capped by the animal's `max_held`.
+- **Starvation: an animal with `consecutive_unfed >= 2` escapes** -- the tile reverts to an
+  empty structure (`{"kind": "COOP"|"PASTURE"}`), the whole animal is gone, no partial refund.
+  `consecutive_unfed` resets to 0 on any fed day; a newly placed animal starts at 0, so it always
+  survives its first day unfed. Confirmed directly in the real engine source
+  (`kaggriculture.py`'s `_daily_refresh_animals`, not previously documented here). This is a real
+  capital-loss risk missing from a pure ROI projection (`animal_roi_ok` in
+  `src/robust_agent/scoring.py` assumes the animal survives its full usable-days horizon with no
+  probability of loss) -- confirmed to actually happen mid-game under labor stress (day-0 burst
+  experiment, 2026-08-27: bought 4 animals day 0, all 4 escaped by day 2) and, more benignly,
+  every single champion self-play game deterministically loses its animals on day 29 (workforce
+  collapses to just the farmer during wind-down, when hiring stops and hands aren't replaced) --
+  harmless there specifically because it happens with ~1 day left, but not harmless in general.
 
 ### Terrain / other
 - `BUILD_COOP` / `BUILD_PASTURE` — add a structure to an unoccupied tile.

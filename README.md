@@ -19,7 +19,7 @@ and compete head-to-head on a live leaderboard. $50,000 prize pool (10 × $5,000
 - [`docs/starter_kit/`](docs/starter_kit/) — our own walkthrough docs: CLI setup / local-test / submit workflow,
   plus a tutorial for the official "Melon Maxxer" example agent.
 - [`docs/tests/`](docs/tests/) — log of every local test outcome (benchmark runs, correctness checks, before/after
-  comparisons). This is a project rule, not optional -- see `CLAUDE.md`.
+  comparisons). This is a project rule, not optional -- see [`AGENT.md`](AGENT.md).
 - [`input/`](input/) — source of verified top-placing solutions from comparable past Kaggle simulation competitions, kept as hyperparameter/architecture reference (gitignored, local only; each subfolder has a `PROVENANCE.md`, index at `input/index.json`).
 - [`src/`](src/) — the actual agent code (not under `docs/`):
   - `farm_utils.py` — shared movement/geometry helpers (`step_toward`, `closest`, `act_or_move`,

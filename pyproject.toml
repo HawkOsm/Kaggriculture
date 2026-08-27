@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["submission/main.py", "input", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "C901", "B"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+# Compatibility shim -- its only import is a deliberate re-export for other
+# code (e.g. run_match.py's `agent:<name>` dynamic-load convention), not dead
+# code. `ruff --fix` will otherwise strip it as "unused" (it did once already
+# -- see docs/tests/LOG.md's 2026-08-27 restructuring entry).
+"src/agent.py" = ["F401"]

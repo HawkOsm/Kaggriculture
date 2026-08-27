@@ -1,7 +1,7 @@
 # Test Log Convention
 
 Every local test outcome — a benchmark match, a correctness check, a before/after comparison — gets an
-entry in [`LOG.md`](LOG.md), newest first. This is a project rule (see `../../CLAUDE.md`), not just a
+entry in [`LOG.md`](LOG.md), newest first. This is a project rule (see `../../AGENT.md`), not just a
 suggestion: it's what lets us tell "we measured this" apart from "we assume this," days or weeks later
 when the numbers matter for a real decision (which config to submit, whether a refactor actually changed
 behavior).

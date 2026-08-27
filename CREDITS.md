@@ -1,10 +1,63 @@
 # Credits
 
-Third-party code used in this repo, and exactly how it's used. None of this is submitted
-to the competition, in whole or in part — everything here lives in `src/opponents/` as
-local benchmark/sparring opponents only. Our actual submission (`submission/main.py`) is
-built exclusively from `src/agent.py` + `src/farm_utils.py` + `src/best_config.json`
-(see `src/build_submission.py`).
+Third-party code used in this repo, and exactly how it's used.
+
+## Our actual submission
+
+**`src/adaptive_agent/`** (as of 2026-08-27, see `docs/tests/LOG.md`) is a from-scratch,
+independently-implemented adaptation of the architecture used by
+**`src/opponents/pilkwang_agent.py`**, itself pulled from a public notebook on this
+competition's own Code tab: Pilkwang Kim, ["Kaggriculture: Structured Economic
+Policy"](https://www.kaggle.com/code/pilkwang/kaggriculture-structured-economic-policy).
+Per this competition's own Foundational Rules (§3.6, `docs/RULES.md`), code publicly shared
+on the Code tab is deemed licensed under an OSI-approved license — the source notebook was
+never verbatim-copied into our submission; the architectural concepts (staged
+phase/state machine, scheduled herd/land targets, real price-curve forecasting, global
+greedy bipartite worker-mission dispatch) were re-implemented independently, module by
+module, each stage verified turn-by-turn against the original for faithfulness before the
+next stage was built on top (see `.claude/scratch/pilkwang_rebuild/` for the full build
+record). `submission/main.py` is built exclusively from `src/adaptive_agent/` +
+`src/adaptive_best_config.json` (see `src/build_adaptive_submission.py`).
+
+`src/robust_agent/` — this project's own original reactive-dispatcher design, the prior
+live architecture until the promotion above — has since been deleted entirely (see
+`docs/tests/LOG.md`, 2026-08-27); `adaptive_agent` is now the sole live architecture.
+
+Everything else below (`src/opponents/`) is local benchmark/sparring opponents only, never
+submitted in whole or in part.
+
+## Current opponent pool at a glance (refreshed 2026-08-27)
+
+The tables further down are a historical record (why each agent was pulled, kept, or
+rejected, in the order it happened) and are **not** kept current — deleted files are
+struck through in place rather than removed from the history. This table is the one to
+check for "what's actually live right now": every file in `src/opponents/` that's wired
+into `src/tuning/config.py`'s `OPPONENT_REGISTRY`, with TODAY's leaderboard score (not
+pull-time), and the real, verified result against the current `adaptive_agent` champion
+(4-6 seeded episodes, `src/tuning/simulation.py`, not self-reported). See
+`docs/tests/LOG.md`'s 2026-08-27 opponent-pool-refresh entry for the full methodology.
+
+| File | Author | LB rank/score (2026-08-27) | Champion result |
+|---|---|---|---|
+| `kawa_route_agent.py` | boatlee | live rank moved since pull, ~2500+ tier | 0W-4L, avg -25,219 |
+| `boatlee_v16_agent.py` | boatlee | #83/6638, 2484.9 | 0W-4L, avg -30,107 |
+| `rayk_c95_agent.py` | Rayk Kretzschmar | #146/6638, 2354.8 | 0W-4L, avg -24,495 |
+| `saiteja_agent.py` | Sai Teja Bandaru | #2243/6638, 1203.8 | 0W-4L, avg -13,228 |
+| `kaito_agent.py` | Kaito Fukami | #184/6638, 2287.4 | 0W-4L, avg -20,106 |
+| `tran_hh_agent.py` | Tran H Hoang | #1027/6638, 1703.7 | 0W-4L, avg -11,075 |
+| `pilkwang_agent.py` | Pilkwang Kim | #1179/6638, 1645.7 | 0W-4L, avg -7,790 |
+| `romanrozen_agent.py` | Roman Rozen (team) | #2047/6638, 1321.2 | 0W-4L, avg -19,162 |
+| `prvsiyan_frontier_agent.py` | prvsiyan | #28/6638, 2668.8 | 0W-4L, avg -32,352 |
+| `sakhawathossen_agent.py` | Sakhawat Hossen | #1923/6638, 1376.6 | 0W-4L, avg -24,189 |
+| `stevenleehans_agent.py` | Lord Momo / stevenleehans | #333/6638, 2101.6 | 0W-6L, avg -32,670 |
+| `premaananda108_agent.py` | Prema Ananda | #2961/6638, 890.5 | 2W-2L, avg +411 |
+
+Our own live rank/score today: **#4809/6638, 496.2** (`HawkOsm`) — this reflects
+whatever submission is currently live on Kaggle, not `adaptive_agent`'s local strength;
+we have not resubmitted since the architecture swap (git/Kaggle actions stay manual, see
+`AGENT.md`). Every opponent above genuinely beats the current champion except
+`premaananda108` (a near-even coin flip) — real signal for tracking further tuning
+progress, not a rubber-stamp pool.
 
 ## Official starter kit
 
@@ -57,8 +110,12 @@ move our rating right now.
 
 | File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-21) |
 |---|---|---|---|
-| `rajan1673_agent.py` | [kagriculture](https://www.kaggle.com/code/rajan1673/kagriculture) | rajan jha | #4478/5684, 434.7 |
-| `chaitanyajamble_agent.py` | [Kaggriculture](https://www.kaggle.com/code/chaitanyajamble/kaggriculture) | Chaitanya Jamble | #4058/5684, 507.2 |
+| ~~`rajan1673_agent.py`~~ **REMOVED 2026-08-27** | [kagriculture](https://www.kaggle.com/code/rajan1673/kagriculture) | rajan jha | #4478/5684, 434.7 |
+| ~~`chaitanyajamble_agent.py`~~ **REMOVED 2026-08-27** | [Kaggriculture](https://www.kaggle.com/code/chaitanyajamble/kaggriculture) | Chaitanya Jamble | #4058/5684, 507.2 |
+
+**Both removed 2026-08-27**: `adaptive_agent` now beats both decisively (4W-0L each,
+avg margin well into six figures) -- see `docs/tests/LOG.md`'s opponent-pool-refresh
+entry for the full sweep. No signal left; files deleted rather than kept as dead weight.
 
 Both extracted from a `%%writefile` cell in their respective notebooks (standard
 pattern for Kaggle notebook agents), verbatim aside from adding the file's attribution
@@ -117,10 +174,15 @@ pending a deliberate decision on how to weight them in.
 
 | File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-22) | Tier |
 |---|---|---|---|---|
-| `ektarr_agent.py` | [Diversified Scheduler Baseline \| Kaggriculture](https://www.kaggle.com/code/ektarr/diversified-scheduler-baseline-kaggriculture) | Maxim | #3831/5684, 554.5 | near-tier |
-| `nagatakengo_agent.py` | [Kaggriculture](https://www.kaggle.com/code/nagatakengo/kaggriculture) | nk | #4567/5684, 428.5 | near-tier |
+| ~~`ektarr_agent.py`~~ **REMOVED 2026-08-27** | [Diversified Scheduler Baseline \| Kaggriculture](https://www.kaggle.com/code/ektarr/diversified-scheduler-baseline-kaggriculture) | Maxim | #3831/5684, 554.5 | near-tier |
+| ~~`nagatakengo_agent.py`~~ **REMOVED 2026-08-27** | [Kaggriculture](https://www.kaggle.com/code/nagatakengo/kaggriculture) | nk | #4567/5684, 428.5 | near-tier |
 | `premaananda108_agent.py` | [Economics-Driven Rule Agent (EcoBot v2)](https://www.kaggle.com/code/premaananda108/economics-driven-rule-agent-ecobot-v2) | Prema Ananda | #2604/5684, 850.4 | mid-tier |
 | `sakhawathossen_agent.py` | [Kaggriculture Final Hybrid Champion](https://www.kaggle.com/code/sakhawathossen/kaggriculture-final-hybrid-champion) | Sakhawat Hossen | #1421/5684, 1601.9 | strong |
+
+**`ektarr`/`nagatakengo` removed 2026-08-27**: both now beaten decisively by `adaptive_agent`
+(4W-0L each, avg margin +110,968 / +100,702) -- no signal left. `premaananda108` (2W-2L,
+avg +411, genuinely close) and `sakhawathossen` (0W-4L, avg -24,189, still beats us) both
+kept -- see `docs/tests/LOG.md`'s opponent-pool-refresh entry.
 
 `ektarr_agent.py` and `premaananda108_agent.py` were extracted from real
 `%%writefile main.py` / triple-quoted-source-string cells (the two standard
@@ -203,6 +265,40 @@ No usable `agent(obs)` function:
   submission from a Kaggle Model input (`/kaggle/input/models/...`) not
   included in the notebook pull; no retrievable source.
 
+## 2026-08-27 addition (`src/opponents/`)
+
+`adaptive_agent`'s champion had grown strong enough that the entire near/mid-tier pool
+from the two batches above was fully saturated (4W-0L on every one) while still losing to
+the whole original 2500+ tier -- no gradient left to tune against in that band. Re-pulled
+the current live leaderboard (6638 teams, fetched 2026-08-27) and searched for fresh
+opponents scoring well above our own rating with a real public notebook.
+
+| File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-27) |
+|---|---|---|---|
+| `stevenleehans_agent.py` | [Kaggriculture X544 - Nah, I'd Win.](https://www.kaggle.com/code/stevenleehans/kaggriculture-x544-nah-i-d-win) | Lord Momo / stevenleehans | #333/6638, 2101.6 |
+
+Extracted by running the notebook's own emitter cells (a `main.py` producer, base85+zlib
+embedded source, decoded via the notebook's own decode/write logic rather than
+hand-reverse-engineered) to materialize its output verbatim -- the notebook's own smoke
+test (bundled in a later cell) reports it beating a bundled reference opponent 157,106 vs
+3,461 and 161,914 vs 3,481 across both seats. Confirmed against the current
+`adaptive_agent` champion directly: 0W-6L, avg margin -32,670 across 6 seeded episodes --
+real, current signal.
+
+Seven other candidates pulled from the same fresh leaderboard search (indarkarhana,
+romantamrazov, kunaldesale2408, flexonafft, andrewsokolovsky, yamakawanin, tetsutani)
+were NOT kept: `flexonafft`/`kunaldesale2408` decode to a byte-identical `main.py`
+(same SHA-256) that turns out to be another repost of the `kawa_route_agent.py` source;
+`indarkarhana` decodes cleanly and does beat the champion (0W-6L, avg -32,388) but is an
+85%-def-name-overlap fork of that same `kawa` family with per-seed margins tracking
+`stevenleehans` almost exactly (e.g. -24,811 vs -25,081) -- kept only one, since both are
+near-clones of the same underlying replay; `yamakawanin`'s notebook cells didn't
+reproduce their own `main.py` output when executed outside the live notebook session
+(not investigated further given time budget); `romantamrazov`, `andrewsokolovsky`, and
+`tetsutani` were not attempted this round (heavyweight multi-stage evaluator notebooks,
+or in `tetsutani`'s case a replay-visualization notebook rather than an agent at all).
+Full detail in `docs/tests/LOG.md`'s 2026-08-27 opponent-pool-refresh entry.
+
 ## Usage notes
 
 - These agents are used exclusively as local benchmark/sparring opponents: for
@@ -224,9 +320,16 @@ the win/loss objective saturates against). Local sparring partners only, in
 
 | Module | Author | LB score | Used in default search pool |
 |---|---|---|---|
-| `umutdorukztrk_agent.py` | umutdorukztrk | 380.8 | yes |
-| `iamsdt_agent.py` | iamsdt | 398.8 | registry only (near-saturated) |
-| `kiykhoi_agent.py` | kiykhoi | 401.1 | yes |
-| `mansiaggarwal88_agent.py` | mansiaggarwal88 | 496.4 | registry only (near-saturated) |
-| `moncefelm_agent.py` | moncefelm | 442.1 | registry only — despite the author's score this agent beats our champion by ~89k |
-| `daisy023_agent.py` | daisy023 | 447.3 | yes |
+| ~~`umutdorukztrk_agent.py`~~ | umutdorukztrk | 380.8 | **REMOVED 2026-08-27** |
+| ~~`iamsdt_agent.py`~~ | iamsdt | 398.8 | **REMOVED 2026-08-27** |
+| ~~`kiykhoi_agent.py`~~ | kiykhoi | 401.1 | **REMOVED 2026-08-27** |
+| ~~`mansiaggarwal88_agent.py`~~ | mansiaggarwal88 | 496.4 | **REMOVED 2026-08-27** |
+| ~~`moncefelm_agent.py`~~ | moncefelm | 442.1 | **REMOVED 2026-08-27** |
+| ~~`daisy023_agent.py`~~ | daisy023 | 447.3 | **REMOVED 2026-08-27** |
+
+**All six removed 2026-08-27**: this whole near-~500-rating band is fully saturated --
+`adaptive_agent` now beats every one of them decisively (4W-0L each, avg margin +58,786
+to +128,053, including `moncefelm` which used to beat the old `robust_agent` champion by
+~89k). See `docs/tests/LOG.md`'s opponent-pool-refresh entry for the full sweep and what
+replaced them (the champion currently loses to the entire former 2500+ tier instead --
+that's now the real signal band).
