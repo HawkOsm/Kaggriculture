@@ -352,7 +352,7 @@ def _market_actions(obs, config, farm, private, roles, field):
     needs = _seed_needs(obs, farm, private, roles)
     seed_reserve = 80 if day <= 4 else 150
     seed_order = (
-        ("MELON",)
+        ("MELON", "WHEAT")
         if day == 0
         else ("MELON", "WHEAT", "STRAWBERRY", "CARROT", "TOMATO")
     )

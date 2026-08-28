@@ -53,6 +53,21 @@ def _animal_produces_tonight(tile, rule, day):
         and days_since_first % int(rule["interval"]) == 0
     )
 
+def _animal_has_future_production(tile, rule, day):
+    """Animals aren't sellable -- only their product is -- so once an
+    animal's next scheduled production can't land before the season ends,
+    feeding it is pure cost with no future payoff. Ongoing production runs
+    every `interval` days starting at `placed_day + first`; find the last
+    such day within the season and check it's still ahead of us."""
+    last_day = TOTAL_DAYS - 1
+    placed_day = int(tile.get("placed_day", day) or 0)
+    first_prod = placed_day + int(rule["first"])
+    if first_prod > last_day:
+        return False
+    interval = int(rule["interval"])
+    last_prod_day = first_prod + interval * ((last_day - first_prod) // interval)
+    return last_prod_day >= int(day) + 1
+
 def _add_job(
     jobs,
     priority,
@@ -363,7 +378,10 @@ def _field_jobs(obs, config, farm, private, roles, liquidation):
                     reason="terminal_fertilizer",
                 )
             continue
-        if not tile.get("fed_today", False):
+        animal_rule = ANIMALS.get(tile.get("animal"), ANIMALS["GOOSE"])
+        if not tile.get("fed_today", False) and _animal_has_future_production(
+            tile, animal_rule, day
+        ):
             risk = int(tile.get("consecutive_unfed", 0) or 0) >= 1
             _add_job(
                 jobs,
@@ -375,7 +393,6 @@ def _field_jobs(obs, config, farm, private, roles, liquidation):
                 reason="critical_feed" if risk else "feed",
             )
         held = int(tile.get("yield_units", 0) or 0)
-        animal_rule = ANIMALS.get(tile.get("animal"), ANIMALS["GOOSE"])
         product = animal_rule["product"]
         pending_care = int(tile.get("pending_care_bonus", 0) or 0)
         produces_tonight = _animal_produces_tonight(

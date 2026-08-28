@@ -3,7 +3,7 @@ from .state import _role_plan
 from .dispatch import _unit_actions
 from .market import _market_actions, _schedule_market_adjustment
 
-class PilkwangDispatcher:
+class Dispatcher:
     def __init__(self, config=None):
         self.config = config
 
@@ -28,7 +28,7 @@ class PilkwangDispatcher:
         }
 
 def make_agent(config=None):
-    dispatcher = PilkwangDispatcher(config)
+    dispatcher = Dispatcher(config)
     def agent(obs):
         try:
             return dispatcher.decide(obs)
@@ -49,4 +49,4 @@ def make_agent(config=None):
             }
     return agent
 
-pilkwang_agent = make_agent()
+agent = make_agent()

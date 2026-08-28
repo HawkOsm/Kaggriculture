@@ -185,9 +185,15 @@ def _reserved_animal_slots(farm):
         slots.extend(selected)
     return (slots, by_quadrant)
 
+def _column_major_key(quadrant, board_size):
+    x_far = 0 if quadrant in ('NW', 'SW') else board_size - 1
+    y_far = 0 if quadrant in ('NW', 'NE') else board_size - 1
+    return lambda pos: (abs(pos[0] - x_far), abs(pos[1] - y_far))
+
 def _role_plan(obs, config, farm):
     private = obs.get('private', {}) or {}
     tiles = farm.get('tiles', []) or []
+    board_size = len(tiles)
     animal_slots, zones = _reserved_animal_slots(farm)
     targets = _herd_targets(obs, config, farm, private, len(animal_slots))
     desired_animals = min(len(animal_slots), sum(targets.values()))
@@ -217,7 +223,7 @@ def _role_plan(obs, config, farm):
         zone = zones.get(quadrant)
         if not zone:
             continue
-        cells = zone['crops']
+        cells = sorted(zone['crops'], key=_column_major_key(quadrant, board_size))
         fixed = dict(CROP_MIX[quadrant])
         if quadrant == 'NW':
             fixed['MELON'] = min(melon_target, len(cells))
@@ -389,8 +395,12 @@ def _sell_quantity(item, have, inventory, day, shed_load, config, obs=None):
     while quantity < have and _price_at(item, inventory + quantity, obs) >= threshold:
         quantity += 1
     if left <= 12:
-        forced = int(math.ceil(have / float(max(1, left - 1))))
-        quantity = max(quantity, min(have, forced))
+        price_now = _price_at(item, inventory, obs)
+        crashed = price_now < 0.15 * base
+        overstocked = have > 20
+        if not crashed or left <= 3 or overstocked:
+            forced = int(math.ceil(have / float(max(1, left - 1))))
+            quantity = max(quantity, min(have, forced))
     return quantity
 
 
@@ -439,6 +449,21 @@ def _animal_produces_tonight(tile, rule, day):
     placed_day = int(tile.get('placed_day', day) or 0)
     days_since_first = next_day - placed_day - int(rule['first'])
     return days_since_first >= 0 and days_since_first % int(rule['interval']) == 0
+
+def _animal_has_future_production(tile, rule, day):
+    """Animals aren't sellable -- only their product is -- so once an
+    animal's next scheduled production can't land before the season ends,
+    feeding it is pure cost with no future payoff. Ongoing production runs
+    every `interval` days starting at `placed_day + first`; find the last
+    such day within the season and check it's still ahead of us."""
+    last_day = TOTAL_DAYS - 1
+    placed_day = int(tile.get('placed_day', day) or 0)
+    first_prod = placed_day + int(rule['first'])
+    if first_prod > last_day:
+        return False
+    interval = int(rule['interval'])
+    last_prod_day = first_prod + interval * ((last_day - first_prod) // interval)
+    return last_prod_day >= int(day) + 1
 
 def _add_job(jobs, priority, value, target, action, need=None, reason='', latest_hour=23):
     jobs.append({'priority': int(priority), 'value': float(value), 'target': tuple(target), 'action': list(action), 'need': need, 'reason': str(reason), 'latest_hour': int(latest_hour)})
@@ -559,11 +584,11 @@ def _field_jobs(obs, config, farm, private, roles, liquidation):
             if tile.get('fertilizer_available', False):
                 _add_job(jobs, 0, float(prices.get('FERTILIZER', MARKET['FERTILIZER'][0]) or MARKET['FERTILIZER'][0]), target, ('COLLECT_FERTILIZER',), reason='terminal_fertilizer')
             continue
-        if not tile.get('fed_today', False):
+        animal_rule = ANIMALS.get(tile.get('animal'), ANIMALS['GOOSE'])
+        if not tile.get('fed_today', False) and _animal_has_future_production(tile, animal_rule, day):
             risk = int(tile.get('consecutive_unfed', 0) or 0) >= 1
             _add_job(jobs, 0 if risk else 1, 900 if risk else 260, target, ('FEED',), need='WHEAT', reason='critical_feed' if risk else 'feed')
         held = int(tile.get('yield_units', 0) or 0)
-        animal_rule = ANIMALS.get(tile.get('animal'), ANIMALS['GOOSE'])
         product = animal_rule['product']
         pending_care = int(tile.get('pending_care_bonus', 0) or 0)
         produces_tonight = _animal_produces_tonight(tile, animal_rule, day)
@@ -872,7 +897,9 @@ def _livestock_score(obs, animal, own_count, opponent_count):
     normalized_price = price / float(MARKET[product][0])
     demand_support = 1.0 + 0.012 * _town_demand_per_day(obs, product)
     crowding = 1.0 + 0.18 * opponent_count + 0.08 * own_count
-    return normalized_price * demand_support / crowding
+    above_target = MARKET[product][5]
+    fragility = 1.0 + 0.25 * max(0.0, above_target - 1.0)
+    return normalized_price * demand_support / (crowding * fragility)
 
 def _herd_targets(obs, config, farm, private, capacity):
     day = int(obs.get('day', 0) or 0)
@@ -1131,7 +1158,7 @@ def _market_actions(obs, config, farm, private, roles, field):
             money -= cost
     needs = _seed_needs(obs, farm, private, roles)
     seed_reserve = 80 if day <= 4 else 150
-    seed_order = ('MELON',) if day == 0 else ('MELON', 'WHEAT', 'STRAWBERRY', 'CARROT', 'TOMATO')
+    seed_order = ('MELON', 'WHEAT') if day == 0 else ('MELON', 'WHEAT', 'STRAWBERRY', 'CARROT', 'TOMATO')
     for crop in seed_order:
         if len(orders) >= max_orders or needs.get(crop, 0) <= 0:
             continue
@@ -1157,7 +1184,7 @@ def _market_actions(obs, config, farm, private, roles, field):
 # agent.py
 # --------------------------------------------------------------------------
 
-class PilkwangDispatcher:
+class Dispatcher:
 
     def __init__(self, config=None):
         self.config = config
@@ -1176,7 +1203,7 @@ class PilkwangDispatcher:
         return {'farmer': field['farmer'], 'hands': field['hands'], 'market': market}
 
 def make_agent(config=None):
-    dispatcher = PilkwangDispatcher(config)
+    dispatcher = Dispatcher(config)
 
     def agent(obs):
         try:
@@ -1188,7 +1215,7 @@ def make_agent(config=None):
             hand_count = len(farms[player].get('hands', []) or []) if 0 <= player < len(farms) else 0
             return {'farmer': ['PASS'], 'hands': [['PASS'] for _ in range(hand_count)], 'market': []}
     return agent
-pilkwang_agent = make_agent()
+agent = make_agent()
 
 
 # --------------------------------------------------------------------------

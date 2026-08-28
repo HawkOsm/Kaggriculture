@@ -36,7 +36,15 @@ def _livestock_score(obs, animal, own_count, opponent_count):
     normalized_price = price / float(MARKET[product][0])
     demand_support = 1.0 + 0.012 * _town_demand_per_day(obs, product)
     crowding = 1.0 + 0.18 * opponent_count + 0.08 * own_count
-    return normalized_price * demand_support / crowding
+    # Live spot price alone doesn't see the product's oversupply-crash risk --
+    # wool's curve (sq, above_target 3.2) craters far faster than milk's
+    # (linear, 1.6) once both players' herds are producing at once. Discount
+    # by that structural fragility so repeat mid-game purchases don't chase
+    # a momentarily-good price into a product that dumps to the floor the
+    # moment this animal's own output lands.
+    above_target = MARKET[product][5]
+    fragility = 1.0 + 0.25 * max(0.0, above_target - 1.0)
+    return normalized_price * demand_support / (crowding * fragility)
 
 def _herd_targets(obs, config, farm, private, capacity):
     day = int(obs.get("day", 0) or 0)

@@ -139,6 +139,23 @@ def _sell_quantity(item, have, inventory, day, shed_load, config, obs=None):
     ):
         quantity += 1
     if left <= 12:
-        forced = int(math.ceil(have / float(max(1, left - 1))))
-        quantity = max(quantity, min(have, forced))
+        # Forcing an even sell-off starting a full 12 days out means we keep
+        # dumping into a price some other seller (opponent or us) already
+        # crashed, one unit an hour, with no chance for it to recover --
+        # observed selling MILK at $1 for 8 straight hours on day18 this
+        # way. Only override the price-conscious threshold above while
+        # there's still real runway to wait for recovery (left > 3) if the
+        # price isn't actually crashed; once genuinely out of time, force it
+        # regardless, since unsold inventory is worthless at game end.
+        price_now = _price_at(item, inventory, obs)
+        crashed = price_now < 0.15 * base
+        # A crash isn't always temporary -- if the market stays oversupplied
+        # (e.g. an opponent that keeps dumping regardless of price), waiting
+        # it out just lets held inventory snowball with the capital tied up
+        # in it, for no better a price later. Stop waiting once the pile
+        # itself gets large, even if the price hasn't recovered.
+        overstocked = have > 20
+        if not crashed or left <= 3 or overstocked:
+            forced = int(math.ceil(have / float(max(1, left - 1))))
+            quantity = max(quantity, min(have, forced))
     return quantity

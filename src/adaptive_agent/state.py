@@ -88,9 +88,20 @@ def _reserved_animal_slots(farm):
         slots.extend(selected)
     return slots, by_quadrant
 
+def _column_major_key(quadrant, board_size):
+    # Animal pastures reserve the columns nearest the shed (see
+    # _reserved_animal_slots' distance sort), so crop cells fill starting
+    # from the far corner of the quadrant inward -- that way a quadrant's
+    # crop counts land in whole, unbroken columns instead of spilling into
+    # the ragged edge the pasture reservation leaves near the shed.
+    x_far = 0 if quadrant in ("NW", "SW") else board_size - 1
+    y_far = 0 if quadrant in ("NW", "NE") else board_size - 1
+    return lambda pos: (abs(pos[0] - x_far), abs(pos[1] - y_far))
+
 def _role_plan(obs, config, farm):
     private = obs.get("private", {}) or {}
     tiles = farm.get("tiles", []) or []
+    board_size = len(tiles)
     animal_slots, zones = _reserved_animal_slots(farm)
     targets = _herd_targets(obs, config, farm, private, len(animal_slots))
     desired_animals = min(len(animal_slots), sum(targets.values()))
@@ -131,7 +142,7 @@ def _role_plan(obs, config, farm):
         zone = zones.get(quadrant)
         if not zone:
             continue
-        cells = zone["crops"]
+        cells = sorted(zone["crops"], key=_column_major_key(quadrant, board_size))
         fixed = dict(CROP_MIX[quadrant])
         if quadrant == "NW":
             fixed["MELON"] = min(melon_target, len(cells))
