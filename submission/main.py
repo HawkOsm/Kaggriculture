@@ -11,7 +11,8 @@ from collections import deque
 import math
 import traceback
 
-CONFIG = {'LIQUIDATION_TURNS': 26,
+CONFIG = {'OPENING_RESTRICT_DAYS': 2,
+ 'LIQUIDATION_TURNS': 26,
  'HERD_EXPANSION_DAY': 6,
  'HERD_FINAL_DAY': 8,
  'ANIMAL_PURCHASE_LAST_DAY': 13,
@@ -385,7 +386,8 @@ def _sell_quantity(item, have, inventory, day, shed_load, config, obs=None):
     opponent_supply = _opponent_visible_supply(obs, item, horizon=1)
     town_demand = _town_demand_per_day(obs, item)
     if opponent_supply > town_demand:
-        reserve *= max(0.72, 1.0 - 0.015 * (opponent_supply - town_demand))
+        floor = 0.35 if base > 100 else 0.72
+        reserve *= max(floor, 1.0 - 0.015 * (opponent_supply - town_demand))
     projected_inventory = inventory + opponent_supply - town_demand
     future_price = _price_at(item, projected_inventory, obs)
     threshold = reserve
@@ -545,7 +547,7 @@ def _field_jobs(obs, config, farm, private, roles, liquidation):
                 animal_rule = ANIMALS[role_item]
                 if left >= animal_rule['first'] + 2:
                     _add_job(jobs, 3, 420, target, ('BUILD_' + animal_rule['structure'],), reason='build_' + animal_rule['structure'].lower(), latest_hour=22)
-            elif hour <= 22 and day <= CROPS[role_item]['last_plant'] and (seeds.get(role_item, 0) > 0):
+            elif hour <= 22 and day <= CROPS[role_item]['last_plant'] and (seeds.get(role_item, 0) > 0) and (not (day <= _cfg(config, 'OPENING_RESTRICT_DAYS', 0) and role_item not in ('WHEAT', 'MELON'))):
                 rule = CROPS[role_item]
                 expected = 4 if role_item == 'WHEAT' else rule['max_yield']
                 price = float(prices.get(role_item, MARKET[role_item][0]) or MARKET[role_item][0])

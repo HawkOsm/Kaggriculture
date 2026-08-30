@@ -265,6 +265,10 @@ def _field_jobs(obs, config, farm, private, roles, liquidation):
                 hour <= 22
                 and day <= CROPS[role_item]["last_plant"]
                 and seeds.get(role_item, 0) > 0
+                and not (
+                    day <= _cfg(config, "OPENING_RESTRICT_DAYS", 0)
+                    and role_item not in ("WHEAT", "MELON")
+                )
             ):
                 rule = CROPS[role_item]
                 expected = 4 if role_item == "WHEAT" else rule["max_yield"]

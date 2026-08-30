@@ -382,10 +382,27 @@ reserve cushions during the window, plus a day-0 hire target that bypasses the b
 any opponent's table: kawa's and prvsiyan's sources were read directly and both are absolute
 per-step movement choreography for a fixed actor count, which desyncs if any quantity changes.
 
-**Status: unverified.** Honest prior — this is still a "spend aggressively early" variant, and
-those have failed 9+ times (see the first section). Phase separation itself is independently
-corroborated by two reference winners (Halite IV's full second `EARLY_PARAMETERS` set; Lux S2's
-`END_PHASE`/`ICE_MINE_RUSH` step thresholds), which is why it was built rather than dismissed.
+**Status (robust_agent-era `opening_*`): unverified, never tested** — `robust_agent` was deleted
+before this got run. Honest prior at the time — this is still a "spend aggressively early"
+variant, and those have failed 9+ times (see the first section). Phase separation itself is
+independently corroborated by two reference winners (Halite IV's full second `EARLY_PARAMETERS`
+set; Lux S2's `END_PHASE`/`ICE_MINE_RUSH` step thresholds), which is why it was built rather than
+dismissed.
+
+**Status (adaptive_agent-era, narrower re-test): ✅ real improvement, promoted — 2026-08-30.**
+First re-measured our own agent's actual day-0-2 behavior instead of assuming a gap: hiring (8
+hands day 0) and spend pace ($2,848 of $3,000 by end of day 2) already matched the strong-opponent
+range, and animal placement was already COW/SHEEP-only — so this was NOT the "spend more
+aggressively" failure pattern the 9+ prior attempts were. The one real divergence was crop
+selection: we planted CARROT and STRAWBERRY during the opening alongside WHEAT/MELON, where the
+documented strong-opponent convergence is wheat+melon only. Fix was narrower than the old
+`opening_*` design — one condition on `_field_jobs`' PLANT job (`src/adaptive_agent/dispatch.py`):
+while `day <= OPENING_RESTRICT_DAYS` (config key, set to 2), only WHEAT/MELON planting jobs are
+generated; other crops defer to day 3+. No gate relaxation, no hire-target change, no reserve-scale
+change. Verified via `compare_agents.py` — own money improved in 5/6 opponents, reactive-opponent
+(pilkwang) margin flipped from -12,032 to +4,831, tool flagged the expected fixed-tape confound
+(reduced overproduction stops crashing the shared market, so price-blind fixed sellers land a
+better price without us doing worse). Full entry: `docs/tests/LOG.md`, 2026-08-30.
 
 ---
 
