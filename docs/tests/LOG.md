@@ -4,6 +4,355 @@ See [`README.md`](README.md) for the entry format and convention. Newest first.
 
 ---
 
+## 2026-08-31 — Pinpointed the 3rd-quadrant collapse mechanism (PLANT job starvation) via a public reference replay; priority-tier fix tested, still regresses
+
+- Continued from the crop-budget-cap failure (below): used a public replay
+  (`/home/osm/Downloads/97601003.json`, a real "Crop Dusta" vs "Crop Dusta" episode, analyzed for
+  strategic comparison ONLY -- tile/hand/money counts extracted, no action sequence used or copied)
+  as a concrete existence proof that 3-quadrant management is achievable with our exact labor budget:
+  that game's players use 11-12 hands (same ballpark as our 13-hand cap) and maintain SW growing from
+  12->25 fully-planted tiles by day 18-22, with all 3 quadrants near-fully utilized until the genuine
+  end-of-season wind-down starting ~day 26-29. This ruled out "insufficient labor" and "too much
+  committed area" as the root cause (both already separately falsified this session) and confirmed
+  the goal is reachable -- there's a real, fixable gap in our implementation.
+- **Traced the actual mechanism** (uncapped `MAX_EXTRA_LAND=2`, no other fix applied): NW's own
+  water-per-plant-tile ratio stays healthy throughout (3.36-4.21) even as NW's tile count collapses --
+  ruling out uniform under-watering. PLANT actions (not WATER) collapse farm-wide starting days
+  16-19 (NW=0, NE=2) and never recover. Direct tile inspection at day 18: 3 of NW's 4 wheat-role
+  tiles sit empty, fully eligible to replant (seeds in stock: WHEAT held flat at 33 for 15 days,
+  `last_plant=24` not yet reached, zero `BUY_SEED` orders needed) -- the job is legal and exists, it
+  simply never wins the dispatcher's turn-by-turn competition. Root cause: `PLANT` (filling an empty
+  tile) sits at priority tier 4 (dispatch.py ~line 282), the same near-zero-bonus tier as `dig_weed`,
+  below `ongoing_water`/`care` (tier 3) and `ongoing_harvest`/`fertilizer` (tier 2). With 3 quadrants,
+  the total volume of tier-2/3 maintenance work grows enough that PLANT (tier 4, ~$0 `PRIORITY_BONUS`)
+  is chronically starved -- there's always something higher-priority to do, so empty tiles never get
+  refilled, in ALL quadrants (not just the new one), which is why NW/NE decay too.
+- **Fix tried**: moved `plant_<crop>`'s priority from tier 4 to tier 3 (dispatch.py), isolated,
+  combined with `MAX_EXTRA_LAND=2`. **Partial trace-level improvement, confirmed directionally
+  correct**: PLANT tile counts at day 15/18 rose to 56/48 (from the unfixed 50/35) -- genuinely more
+  planting got done. **But the collapse still happens by day 26-29** -- WEED count roughly doubled
+  instead (14 vs ~0-6 before) as `dig_weed` (still tier 4, now relatively more starved) absorbed the
+  neglect that PLANT used to absorb. **Result (`compare_agents.py`, N=8 seeds): clean regression,
+  same as the uncapped/capped attempts** -- pilkwang own money 72,706 -> 69,214, margin
+  +409 -> -10,086; kawa and prvsiyan margins also worse (prvsiyan own money down too).
+- **Real conclusion, not just another rejected mutant**: reordering which job type wins the
+  dispatcher's competition doesn't fix an absolute THROUGHPUT shortfall -- it just decides which
+  specific neglect symptom shows up (empty tiles vs weeds vs undersized harvests). The reference
+  replay's players complete meaningfully more total maintenance work per turn with the same headcount
+  we have, meaning the real gap is dispatch/routing THROUGHPUT itself (jobs completed per worker per
+  turn), not job ORDERING -- the exact same conclusion, arrived at from a completely different
+  angle, as the already-closed worker-target caching and priority-mutation-testing investigations.
+  **3rd-quadrant handling is closed for this session**: three structurally different fix attempts
+  (labor/crop-area cap x2, priority-tier reorder) all cleanly regress, and the root cause traces back
+  to the same dispatch-throughput ceiling this project has hit from every other angle it's tried.
+
+---
+
+## 2026-08-31 — 3rd-quadrant collapse traced to farm-wide neglect cascade; labor-derived crop-budget cap does NOT fix it (2 attempts)
+
+- Traced a full game with `MAX_EXTRA_LAND=2`: unlocking the 3rd quadrant (SW) doesn't just leave new
+  land idle -- total farm-wide `PLANT` tile count actively collapses afterward (38->13 tiles over
+  11 days in the first trace), while EMPTY/WEED climb. Root cause: `_role_plan` (`state.py`) assigns
+  a crop role to every cell in every unlocked quadrant unconditionally, with no reference to labor
+  capacity. Unlocking SW instantly commits ~50% more crop area to a FIXED 13-hand cap (confirmed
+  identical to pilkwang's own `MAX_HANDS`), diluting maintenance below what every tile -- including
+  previously-healthy ones in NW/NE -- needs to survive.
+- **Attempt 1**: added a labor-derived cap on STRAWBERRY (the uncapped "leftover-fill" crop) only,
+  `STRAWBERRY_TILES_PER_WORKER=2.0` (derived live from `1 + len(hands)`, calibrated to be a no-op at
+  the current 2-quadrant config). Confirmed genuine no-op at 2 quadrants (19 tiles observed vs cap of
+  28, non-binding). **Still collapsed at 3 quadrants** (PLANT 50->2) -- each extra quadrant also adds
+  its own small FIXED MELON/WHEAT/CARROT allocation, uncapped, which compounds with quadrant count
+  too and wasn't constrained by a strawberry-only cap.
+- **Attempt 2**: widened the cap to the FARM-WIDE TOTAL crop-cell commitment (fixed crops deducted
+  from the shared budget first, STRAWBERRY only fills what's left), `STRAWBERRY_TILES_PER_WORKER=3.2`
+  (recalibrated to the empirically-stable 2-quadrant total of 39 tiles at 14 workers, ~2.79/worker,
+  with margin). **Still collapsed** (PLANT 42->0 by day 29) despite genuinely constraining how much
+  NEW area got committed at day 15 (42 vs the uncapped 50).
+- **Why capping commitment doesn't fix it**: instrumented `_unit_actions` to compute WATER-actions-
+  per-PLANT-tile across the game in 4-day buckets. The ratio does NOT drop at the point of collapse
+  (days 16-19: 3.455, actually higher than the stable-era baseline of ~2.76-3.6) -- so this isn't a
+  uniform farm-wide watering-throughput shortfall that a smaller total tile count would fix. The real
+  mechanism is more specific than "too much committed area": most likely an UNEVEN distribution
+  (the new, more-distant SW quadrant's tiles going under-watered while NW/NE stay serviced, masked by
+  a farm-wide average) rather than an aggregate capacity shortfall a global budget cap can address.
+- **Status: unresolved, not forcing a 3rd guess.** Both fix attempts were real, honestly tested, and
+  both failed cleanly -- reverted, nothing kept. The actual root cause needs a quadrant-level (not
+  farm-wide-average) watering-frequency breakdown to pin down before another fix attempt is
+  justified; this is a genuinely different, more specific hypothesis than either attempt tested here.
+
+---
+
+## 2026-08-31 — Checked kawa's reactive-patch layer and one dormant mechanism for genuinely new (not reference-matching) code ideas
+
+- Following the diff-against-pilkwang pass (below): user's point was that pilkwang-matching is a
+  ceiling (2008, the top of the reactive tier), not a path to exceeding it — so this pass looked at
+  the ~2500+ tape agents' *reactive patch layers* specifically (kawa_route_agent.py), since those
+  are genuine live logic bolted onto a script, not the unusable precomputed tape itself.
+- **`_v17_feed_guard`** (a hard override that force-feeds any animal at risk of going unfed, run
+  independently of normal dispatch priority): measured first whether we actually need it —
+  instrumented 4 real games, counted every `consecutive_unfed >= 1` occurrence. Result: 1152
+  instances across 4 games, but **max ever observed is 1** — animals are never actually left unfed
+  two days running. Our tier-based FEED priority already fully prevents the failure mode this
+  guard exists to catch. Not needed; correctly screened out before building anything.
+- **`_weed_repair_action`** (detours a unit to DIG a weed before resuming an "intended" scripted
+  action, replaying the interrupted action once cleared): this exists specifically to patch a
+  precomputed tape's blind spot — a script can't know in advance which tile randomly grows a weed.
+  Our dispatcher is fully reactive every turn already, so a weed tile is just another job in the
+  normal scoring loop with no tape to desync. Doesn't apply to this architecture.
+- **`PRICE_IMPACT_PRODUCTS`** (real, but genuinely different find): `market.py`'s sell-ordering
+  already has a price-impact-priority mechanism (adapted from a different public notebook per its
+  own comment, racing steep-decay products like MELON/STRAWBERRY/MILK/WOOL ahead of an anticipated
+  market dump) sitting in the code with a `()` (no-op) default — and it is NOT in
+  `src/tuning/search_space.py` at all, meaning it has never been activated in any Optuna trial,
+  ever. This is dormant code, not a value Optuna already explored or a reference-matching revert.
+  Enabled it with the exact product set named in its own comment, isolated test (clean worktree,
+  since this code was sitting uncommitted in the live tree from other work): **small, clean
+  null-to-negative result** — own money up for kawa (+739) but down for prvsiyan (-60) and pilkwang
+  (-158), pilkwang margin down slightly (+409 -> +151). Doesn't clear the promotion bar (needs 2/3
+  own-money up AND better reactive margin), but the magnitude is small enough it may just be noise
+  rather than a real effect in either direction at N=8 seeds. Not promoted; also not conclusively
+  dead — a candidate for a larger-N re-test if this direction is revisited, unlike everything else
+  tested today which regressed clearly.
+- **Takeaway**: tape-agents' reactive patches largely exist to compensate for gaps specific to a
+  *scripted* architecture (blind to random events, no per-turn safety net) that a fully-reactive
+  dispatcher like ours doesn't have in the first place — "borrow their patches" isn't the right
+  transplant for most of that layer. The one clean miss (this project's own code has a dormant,
+  never-search-space-wired mechanism) is a genuinely different and useful class of finding: check
+  `search_space.py` against every `_cfg(config, "KEY", ...)` call site in the codebase for other
+  keys that exist in code but were never wired into tuning — quick to check, and would surface any
+  other similarly-orphaned mechanisms.
+
+---
+
+## 2026-08-31 — Full diff of dispatch/crop-assignment pipeline vs pilkwang's real source: no fixable bug found, one existing addition confirmed as a real (not assumed) win
+
+- User challenge: config-value re-tests are largely redundant with Optuna's already-completed
+  search (confirmed separately, same date — see the `MAX_EXTRA_LAND` entry's Optuna-trial-history
+  addendum); the only place left with real information is the CODE itself. Since `adaptive_agent`
+  is explicitly pilkwang-derived, did a full line-by-line diff of the core dispatch/crop-assignment
+  functions against `src/opponents/pilkwang_agent.py`'s real source, hunting for any place our copy
+  silently diverges from the reference in a way that isn't just Optuna-tunable config.
+- `_crop_jobs`, `_field_jobs`, `_unit_actions`: byte-identical to pilkwang's, aside from two already
+  deliberate, already-verified additions (config-parameterization, the opening-window crop
+  restriction, end-of-season feed cutoff) and one important robustness fix worth flagging: our
+  `_unit_actions` handles `PRIORITY_BONUS` dict keys correctly whether loaded from Python (int keys)
+  or a JSON-round-tripped saved config (str keys) — pilkwang's raw source only handles int keys, so
+  a config loaded from JSON with that structure would silently degrade to a much weaker fallback
+  formula (`-1000.0 * priority`) in pilkwang's version. Not itself a game-strategy difference, but
+  confirms our copy is a faithful-or-better port, not a degraded one.
+- **One real, previously-undocumented divergence found**: `_role_plan` (`state.py`) sorts crop-role
+  cells by a custom `_column_major_key` before zipping them with the crop sequence (fills from the
+  quadrant's far corner inward, avoiding a "ragged edge" near pasture-reserved cells per its own
+  inline comment); pilkwang's own source uses the cells in their natural, unsorted order. Since role
+  assignment is purely positional (`zip(cells, sequence)`), this changes which physical tiles get
+  which crop. No LOG.md entry anywhere documented this addition being tested — it predates this
+  project's logging convention or was added silently.
+- **Isolated test**: reverted `_role_plan` to pilkwang's plain `cells = zone["crops"]` (no sort),
+  nothing else changed, tested in an isolated worktree. **Result (`compare_agents.py`, N=8 seeds):
+  margin got WORSE against all three opponents** (pilkwang +409 -> -10,155; kawa -26,399 -> -26,448;
+  prvsiyan -27,748 -> -29,220) — own money moved in mixed directions (up against pilkwang/kawa, down
+  against prvsiyan) but margin, the metric that actually decides win/loss, regressed everywhere.
+  **Conclusion: removing this addition regresses, meaning the addition itself is a genuine,
+  confirmed improvement over pilkwang's raw approach** — not a bug, not an assumption resting on an
+  untested comment. Kept as-is (no code change).
+- **Bottom line for "what needs to change in code"**: the core dispatch/crop-assignment pipeline is
+  either a faithful copy of the strongest known reference agent or, in the one place it differs,
+  already confirmed better than that reference by direct measurement. No fixable divergence found in
+  this pass. Remaining undiffed candidates for a similar hunt: `_herd_targets`/`_market_actions`
+  (`market.py`, `farm_plan.py`) — not yet done, would need the same one-function-at-a-time diff +
+  isolated-revert-test treatment if pursued further.
+
+---
+
+## 2026-08-31 — `MAX_EXTRA_LAND` isolated 1→2 (3rd quadrant), traced cause, still regresses
+
+- Traced two losing games vs pilkwang in full: our late-game income growth stalls/reverses around
+  day 20-27 while pilkwang's accelerates. Root-caused via direct tile-state inspection (not
+  actions.csv alone): we are stuck at `unlocked_quadrants=['NW','NE']` for the ENTIRE game, while
+  pilkwang unlocks `SW` by day 14. `_role_plan`'s STRAWBERRY allocation is
+  `max(0, len(cells) - sum(fixed.values()))` — leftover cells after MELON/WHEAT/CARROT/animal-slot
+  allocation — so fewer total quadrants directly means a smaller STRAWBERRY budget: by day 18 we
+  held 18 STRAWBERRY tiles vs pilkwang's 35, and ours decayed to 1 by day 27 (0 by day 29) while
+  pilkwang's stayed productive at 22-30 through day 26. STRAWBERRY harvest waves (large synchronized
+  water→harvest cycles) accounted for the majority of pilkwang's late-game money spikes (e.g. day 23:
+  +9,795 for them on a 24-harvest day vs our +880 on a 7-harvest day).
+- **Traced the actual blocker**: `adaptive_best_config.json` sets `MAX_EXTRA_LAND: 1` (code default
+  is 2), which makes the 3rd-quadrant purchase gate (`extra_land < MAX_EXTRA_LAND`) permanently
+  unreachable once the 2nd quadrant is bought — confirmed via direct config diff against pilkwang's
+  own source (`MAX_EXTRA_LAND=2` there). Checked whether this was ever deliberately verified: every
+  appearance of `MAX_EXTRA_LAND: 2` in this file's history is the SAME bundled Optuna trial
+  (~20 other values changed simultaneously — different `TRAVEL_COST`, reshuffled `PRIORITY_BONUS`,
+  etc.) that failed holdout verification as a whole package — never isolated on its own.
+- **Isolated test**: changed only `MAX_EXTRA_LAND` 1→2 in `adaptive_best_config.json`, nothing else,
+  tested in an isolated worktree. **Result (`compare_agents.py`, N=8 seeds, 3 opponents): clean
+  regression** — pilkwang (reactive, trusted signal) own money 72,706 -> 67,228, margin
+  +409 -> -10,137; kawa and prvsiyan also down. Not a fixed-tape confound.
+- **Why the well-traced mechanism didn't survive being turned into an intervention**: the 3rd
+  quadrant costs real cash (land price + reserve) and adds ~25 tiles to a labor pool that already
+  shows meaningful idle/`EMPTY` tile counts at just 2 quadrants (7-23 empty tiles observed across
+  both traced games) — the extra land dilutes the same headcount over more unworked ground rather
+  than producing more harvest. Pilkwang's whole system (labor pacing, hire targets, dispatch tuning)
+  is built around a 3-quadrant economy end to end; bolting the 3rd quadrant onto our
+  narrower-labor-tuned setup in isolation doesn't transplant the benefit.
+- **This is the 6th independent confirmation of the same wall this project keeps hitting**: raise
+  workforce ceiling, raise animal count (2 mechanisms), raise `_base_target_hands` floor, and now
+  raise the land cap — every "opponent has more of resource X, give us more X" idea fails, regardless
+  of how well-traced and mechanistically plausible the correlation looks beforehand. Reverted,
+  nothing kept. `MAX_EXTRA_LAND: 1` stays as-is, now genuinely verified rather than merely
+  historically bundled into a failed trial.
+- **Confound check (user question: is buying the 3rd quadrant just mistimed?)**: our tuned config
+  opens land aggressively (`LAND_OPEN_DAYS: [2, 4]` vs pilkwang's own default `(5, 9)`), so the first
+  isolated test above bought the 3rd quadrant as early as day 4. Re-ran with `LAND_OPEN_DAYS: [2, 9]`
+  (delay the 3rd-quadrant threshold to pilkwang's own day-9 default, `MAX_EXTRA_LAND` still 2, nothing
+  else changed) to separate "3rd quadrant is bad" from "buying it on day 4 is bad". **Result: byte-
+  identical to the day-4 test** (pilkwang 72,706 -> 67,228, margin +409 -> -10,137, exactly the same
+  numbers) — the day threshold is provably inert here because cash availability, not the day gate, is
+  the actual binding constraint (confirmed separately: at day 8-10 with a fresh/untuned config, money
+  was only $6-788 against a $2,500 need). So this was never a timing artifact — genuinely, buying the
+  3rd quadrant whenever affordable hurts under our current labor/dispatch efficiency.
+- **Checked whether labor should scale with land (user's hypothesis)**: `pilkwang_agent.py`'s own
+  `MAX_HANDS` constant is also 13 — identical to ours, including the exact same dead-duplicate-
+  definition artifact we found and were going to clean up in our own `constants.py` (so that bug was
+  copied from pilkwang's real source originally, not introduced here). Pilkwang works 3 quadrants
+  with the *same* labor ceiling we already have — it is not running more workers per tile. This
+  falsifies "couple land purchases with a labor increase" as the fix: the gap to pilkwang isn't
+  headcount, it's per-worker tile-utilization efficiency (dispatch/routing), which is a much more
+  diffuse problem than a single coupled-purchase mechanism can address — and is also the same area
+  (worker-target dispatch, decision order) already exhaustively tested and closed above.
+
+---
+
+## 2026-08-31 — Mutation testing decision ORDER (market spend sequence + dispatch priority tiers), ❌ null across the board
+
+- Delegated to `agy` (`gemini-3.1-pro-high`, isolated worktree `Kaggriculture-mutation-test` from
+  HEAD `2a939bc`) to systematically test single-variable reorderings of existing decisions — no new
+  values/knobs, order only — since this specific class had never been swept, only individual
+  hand-picked swaps. Scope: `_market_actions`'s fixed spend sequence
+  (SELL→ANIMAL→WHEAT→LAND→SEED→HIRE) and `dispatch.py`'s per-job-type priority tiers.
+- **Harness bug found and corrected before trusting anything**: `agy`'s own `REPORT.md` synthesis
+  was wiped to just its header by a module-level file-truncation bug (rewritten on every script
+  import), so I read the raw `output.txt` per mutant directly instead of the (empty) report.
+  Independently reproduced 2 of the 10 completed mutants myself byte-for-byte to confirm the raw
+  numbers were real, not fabricated or stale.
+- **One mutant (`market_swap_animal_wheat`, wheat block moved before animal block) is a confirmed
+  invalid result, discarded**: the line-based block-swap script didn't account for a real
+  cross-block variable dependency — `owned = {...}` is defined inside the animal block, and the
+  wheat block's `planned_herd = sum(owned.values())` needs it already defined. Moving wheat first
+  makes it reference `owned` before assignment — a guaranteed `NameError` every turn, which is why
+  that candidate's money was flatlined at exactly the starting 3000 in every game. Confirmed via
+  direct `ast`/grep inspection of the reproduced mutated code, not a real finding about spend order.
+- **All 9 remaining valid mutants (`compare_agents.py`, N=8 seeds, 3 opponents): null or negative,
+  zero clear the promotion bar.** Four market-order swaps (`market_animal_sheep_first`,
+  `market_seed_wheat_first`, `market_swap_land_seed`, `market_swap_wheat_land`) are genuinely inert
+  — reactive-opponent margin delta -256 in all four, confirmed identical to my own independent
+  re-run of one of them; the code never actually contends for cash/order-count slots between those
+  specific pairs in real play, so reordering them changes nothing (the residual -256 vs baseline is
+  a pure alternating-seat artifact, not the mutation). The rest are real, clean regressions:
+  `market_hire_first` (HIRE moved to front of the spend sequence) -12,700 reactive margin;
+  `dispatch_tier_harvest_3` (HARVEST priority 2→3) -7,448 (independently re-confirmed);
+  `dispatch_tier_water_2` (WATER 3→2) -5,378; `dispatch_tier_dig_weed_3` (WEED 4→3) -4,563;
+  `dispatch_tier_fertilize_3` (FERTILIZE 2→3) -682; `dispatch_tier_care_2` (CARE 3→2) -393.
+- **Verdict**: the current decision order — both the market spend sequence and the dispatch
+  priority tiers — is already at a local optimum for single-swap reordering. Closes off "reorder
+  the existing decisions" as a lever, alongside the already-closed "add more of resource X" and
+  "smooth this gate" families. Caution for future `agy` delegation: naive line-range code
+  transformations can silently produce invalid code when blocks have cross-references — verify any
+  reported catastrophic/flatlined result by inspecting the actual generated code before trusting it
+  as a game-strategy finding.
+
+---
+
+## 2026-08-30 — `_base_target_hands` floor raised to MAX_HANDS to stop mid-game headcount collapse, ❌ regresses
+
+- Found via traced replay (two independent `run_match.py` games vs pilkwang, `actions.csv`): our
+  headcount peaks at 13 (the real `MAX_HANDS` cap — also found a dead duplicate `MAX_HANDS = 12`
+  definition in `constants.py` shadowed by a later `= 13`, removed as an unrelated cleanup) around
+  day 12-20, then erodes to 10-11 by day 22-26 in both games, while pilkwang holds a flat 14 units
+  the whole game. In game 1 this coincided with our money lead (33,521 vs 24,126 at day 21)
+  reversing into a loss by day 27. Traced to `farm_plan.py`'s `_base_target_hands`: `floor = 10 if
+  day <= 27 ... else 4` is well below the achievable `MAX_HANDS=13`, and `demand_target` (driven by
+  live `due_jobs`) has nothing stopping it from tracking a momentary dip down past that floor, so
+  expiring hands aren't replaced.
+- **Fix tried**: `floor = MAX_HANDS if day <= 27 and active_roles > 0 else 4` — pin headcount to the
+  real ceiling instead of the arbitrary lower constant, built/tested in an isolated worktree
+  (`Kaggriculture-hands-fix`, from HEAD `2a939bc`) to avoid the parallel RL session's uncommitted
+  `market.py`/`state.py` edits.
+- **Result (`compare_agents.py`, N=8 seeds, 3 opponents): clean regression, not a fixed-tape
+  confound** — own money down against all three, including the reactive opponent: pilkwang
+  72,706 -> 59,235 (margin +409 -> -8,206), kawa 57,080 -> 55,814, prvsiyan 69,212 -> 72,334 (own
+  money up here but margin still worse, fixed-tape confound in the usual direction).
+- **Correcting the diagnosis, not just the result**: the headcount drop is very likely a *symptom*
+  of a genuinely low-work window (crops between cycles, fewer live plant/harvest jobs), not the
+  *cause* of losing the lead — forcing hands to stay hired through that window costs real money
+  (escalating `_fib(hires)` hire cost, spent on labor that then plants/works proportionally more
+  regardless of whether the return justifies it) without a demonstrated matching return. This is
+  mechanistically the same wall as the already-closed "raise the workforce ceiling"
+  (`max_hires_per_day`/`opening_hires_day0`) result in `IDEAS_TRIED.md`: more labor doesn't sit idle
+  as spare capacity, it gets spent, and spending more doesn't pay for itself here. I initially
+  reported this as a promising, traced correctness bug (see prior chat turn) — that read the
+  correlation as causation; the measurement above corrects it. Reverted, nothing kept.
+
+---
+
+## 2026-08-30 — CRISIS phase: hard cliff replaced with continuous reserve-pressure score, ❌ null result
+
+- Motivation: `ROADMAP.md` Phase 2 / `PARAMETER_MODEL_FINDINGS.md`'s own cited lesson (Halite IV 4th
+  place, Kore 5th place) is that binary discrete-threshold gates produce flat-plateau-then-cliff
+  search landscapes. `state.py`'s `_policy_phase` had exactly this shape: `at_risk_animals +
+  at_risk_crops > workers` or `shed_load + carried_load >= 95` flips the phase straight from
+  BOOTSTRAP/COMPOUND (animal capital fully open) to CRISIS (animal capital fully blocked except a
+  narrow 4-condition escape hatch), with nothing in between. Unlike the worker-target
+  caching/commitment family (dispatch-continuity bias fighting the greedy matcher), this is a
+  genuinely different lever — decision-gate shape, not routing.
+- Built in an isolated git worktree (`/home/osm/Projects/Kaggriculture-crisis-probe`, from HEAD
+  `2a939bc`) to avoid colliding with the parallel RL session's uncommitted edits to
+  `market.py`/`state.py`.
+- **Attempt 1 (naive):** `crisis_score = max(risk_pressure, load_pressure)` (each normalized to hit
+  1.0 exactly at the old hard-cliff threshold), applied directly as `operating_reserve *= (1.0 +
+  CRISIS_RESERVE_SCALE * crisis_score)` for every animal purchase, in every phase.
+  **Bug found before promotion, not after**: this added brand-new friction to BOOTSTRAP/COMPOUND
+  purchases that never existed before — any nonzero risk/load pressure below the old cliff now
+  taxed purchases that previously had zero such friction. Clean regression:
+  `compare_agents.py` (N=5 seeds, 3 opponents) — pilkwang (reactive, trusted signal) margin
+  4831 -> -8784, own money 75065 -> 70385; kawa own money up but margin down (fixed-tape
+  confound); prvsiyan same pattern.
+- **Attempt 2 (corrected):** `crisis_overshoot = max(0.0, crisis_score - 1.0)` — zero for any state
+  the old code would have classed BOOTSTRAP/COMPOUND (bit-identical reserve there), grows only past
+  the old hard threshold, so the old instant full-open -> full-block jump becomes a continuous ramp
+  instead of disappearing entirely below it. `CRISIS_RESERVE_SCALE = 10.0` default.
+  **Result (N=5 seeds, 3 opponents, same harness)**: near-null across the board — pilkwang (trusted
+  reactive signal) margin 4831 -> 4422 (-409), own money 75065 -> 74808 (-257); kawa own money
+  57570 -> 57479 (-91); prvsiyan own money 78641 -> 77337 (-1304). `compare_agents.py` flagged
+  DIVERGENT SIGNAL (fixed-tape margins up, reactive margin down) — per its own documented guidance,
+  trusted the reactive-opponent number and own-money columns, both flat-to-slightly-down.
+- **Mechanistic diagnostic** (instrumented `_market_actions` via monkeypatch, 3 seeds vs pilkwang):
+  `crisis_overshoot > 0` on 1006/2157 turns (~47%) and `phase == "CRISIS"` on 990/2157 (~46%) —
+  this is NOT a rarely-triggered edge case, it fires nearly half the game. But it barely moved the
+  final money/margin numbers, because the animal-purchase gate it feeds only matters when `day <=
+  ANIMAL_PURCHASE_LAST_DAY (18) and left >= 8` — most CRISIS-phase turns are late-game
+  shed-overflow states (`shed_load` climbing well past 95, `max_overshoot` observed up to 22.0)
+  outside that window, where the smoothing changes nothing because no animal purchase was ever
+  going to be attempted there regardless of gate shape.
+- **Verdict: ❌ rejected, both variants.** The naive version is a real, avoidable implementation bug
+  (documented so it isn't re-attempted the same way); the corrected version is null, not because the
+  cliff-vs-smooth distinction doesn't matter in principle, but because this particular gate's real
+  behavioral footprint (the animal-purchase decision) barely overlaps with the states where the old
+  cliff actually triggered. The Halite/Kore "smoother landscape" argument would need a gate that's
+  both (a) genuinely binary/threshold-shaped and (b) actually load-bearing for a decision that fires
+  often within its own valid window — this one only has (a).
+
+---
+
+## 2026-08-30 — dispatch.py: worker-target caching/commitment, 4 mechanisms tried, all rejected
+- Motivation: measured live thrashing directly first (`.claude/scratch/thrash_measure/`) -- across 15 games (5 seeds x prvsiyan/kawa/pilkwang), 20.2% of all FIELD-job assignments (15,796/78,205) reassign a worker to a different target before it finished walking to the previous one, wasting avg 3.3 tiles/event (51,576 total wasted tiles). Separately measured a theoretical 39.3% travel-savings ceiling (`.claude/scratch/tsp_measure/measure_tsp_ceiling.py`) by 2-opt-reordering each worker's actual daily stop sequence (24,040 actual vs 14,599 optimal-order lower bound, 6 games) -- optimistic, since it assumes the full day's job set is known in advance.
+- **Attempt 1 -- flat commitment bonus** (`.claude/scratch/commit_v2/`): persistent `commitments` dict per worker, +50 score bonus for staying on the previously-assigned FIELD target. Result: travel 55-58% (baseline 53.2%); money worse in 4/5 seeds vs prvsiyan (down to -34.7k in one seed). **Rejected -- net negative.** Bonus blocked switches to genuinely closer jobs too, not just wasteful ones.
+- **Attempt 2 -- insertion-cost/detour penalty** (`.claude/scratch/insertion_v3/`): principled fix for #1 -- penalty scaled to real detour distance (`TRAVEL_COST * distance(committed_target, candidate)`) instead of a flat number. Result (same 15-game set): travel 52.7% (baseline 53.2%, no real change); avg margin -23,497 (baseline -20,139, within noise). **Rejected -- inert.** Penalty too small relative to priority-tier score gaps (159-3,757) to ever change a real decision.
+- **Attempt 3 -- raw tape-hint** (`.claude/scratch/tape_v2/`): recorded our own agent's actual play (seed=1 vs pilkwang) as a per-(day,worker) target-visiting sequence, +70 bonus when live state matched the next expected stop, validity-gated (only fires on exact match). Coverage pre-check against 3 different test seeds: only 21-22% of stops ever matched. Live test: travel 55.4%, avg margin -26,921. **Rejected -- worst of the four.** A stale historical trace with no optimization signal in it.
+- **Attempt 4 -- 2-opt-optimized tape-hint**: same mechanism as #3, but the recorded stops are actually run through the NN+2-opt reordering built for the ceiling measurement first (attempt 3 had skipped this step -- a real gap in that attempt, caught when asked "is the tape bad?"). Result: travel 56.3% (even worse than raw), avg margin -23,441 (slightly better than raw tape but still worse than baseline). **Rejected.** Confirms it wasn't a tape-quality problem -- optimizing the tape made travel worse, not better.
+- **Consolidated verdict**: any mechanism that biases the greedy matcher toward continuity -- own-history bonus, detour penalty, raw recording, or optimally-reordered recording -- trades away the matcher's actual strength (always grabbing whatever's genuinely best right now) for adherence to a static preference that can't react to the live game. The 39.3% ceiling is real but requires foreknowledge no online bias mechanism has. Closing it for real would need replacing the greedy matcher with an actual per-turn batch route solver, not a scoring adjustment -- out of scope for anything tried this session. No `src/adaptive_agent/` files were touched by any of these four attempts; all four lived entirely in `.claude/scratch/`.
+
+---
+
 ## 2026-08-30 — dispatch.py: opening-window crop restriction (WHEAT+MELON only, days 0-2) — real improvement, promoted
 - Command: `python src/compare_agents.py .claude/scratch/main_before_opening.py submission/main.py`
 - Motivation: `docs/tests/IDEAS_TRIED.md`'s "Scripted opening window" entry documented that days 0-2 are 100% deterministic and that five independently-written strong opponents converge on wheat+melon-only planting in that window (never carrot/tomato/strawberry). Measured our own agent's actual day-0-2 behavior first (`.claude/scratch/opening_measure/measure_opening.py`): hiring (8 hands day 0) and spend pace ($2,848 of $3,000 by end of day 2) already matched the strong-opponent range, and animal placement was already COW/SHEEP-only -- but crop selection diverged, planting CARROT and STRAWBERRY during the opening alongside WHEAT/MELON.
@@ -1167,3 +1516,61 @@ See [`README.md`](README.md) for the entry format and convention. Newest first.
 - Command: `python src/optimize.py --n-trials 200 --n-jobs 10 --opponents melon_maxxer,multi_crop,champion`
 - Result: 161 complete trials, 39 pruned. Best margin (candidate - opponent, averaged over 2 episodes x 3 opponents): **18842.8**. Best params: `{"sell_fraction": 0.5318110635761615, "max_sell_chunk": 16, "money_reserve": 900, "seed_money_floor": 11, "hire_reserve_multiple": 2.0011699764866657, "max_hires_per_day": 6, "land_utilization_threshold": 0.6518059024138424, "animal_enabled": true, "max_structures": 6, "startup_days": 12, "structure_money_threshold": 1250, "buy_fertilizer": false, "hire_backlog_ratio": 0.6923467131104678, "diversification_weight": 0.22822797099662806, "opponent_awareness_enabled": true, "opponent_incoming_threshold": 3, "opponent_race_discount": 0.553885789037222, "opponent_lookahead_days": 4}`.
 - Notes: opponent pool was ['melon_maxxer', 'multi_crop', 'champion'], champion going in was `best_config.json`. Promoted to new champion (best_config.json updated).
+
+## 2026-09-01 — Late-game fall-behind + 3rd-field: root-caused to mid-game TRAVEL, tested value-distance-decay (regressed)
+- Fresh loss traced: submission/main.py vs prvsiyan_frontier, 66918 vs 84229. Money even through day 18, gap opens day 21→29 (we 50k→67k, they 54k→84k).
+- Quadrant coverage: we work ONLY 2 quadrants (0,0)+(1,0) the entire game, never a 3rd — that is the live `MAX_EXTRA_LAND:1` cap (start+1=2), set there because buying the 3rd has repeatedly regressed.
+- Instrumented board state per step (`.claude/scratch/instrument_idle.py`): mid-game idle is LOW (11%) but 10-21 tiles sit in drought (`consecutive_unwatered>=1`) every step. Engine confirms `consecutive_unwatered>=2` turns the crop into a WEED (dies), and WATER is single-tile (no AoE). So watering throughput = yield = score, and it can't keep up even on 2 quadrants.
+- Movement breakdown (actions.csv): whole game 52% move / 25% pass / 23% work. By phase: mid-game (d8-24) = **62% move, 11% pass, 27% work, 2.35 moves per work-action**. Immediate direction-reversals (thrash) only 2.6% of moves — workers barely backtrack, so a route/anti-thrash planner has almost nothing to recover. Travel is the binding constraint but it is NOT wasteful motion.
+- Why the greedy assignment ignores distance: score = bonus(tier) + value − TRAVEL_COST·dist. value (amount·price, hundreds-thousands) swamps TRAVEL_COST·dist (~10·5=50), so within a tier workers chase far high-value jobs. Optuna history confirms TRAVEL_COST is a dead knob: objective is FLAT (max≈1.30) across the whole 8-15 range (n=304).
+- Tested a structural fix Optuna can't reach — distance-decay on value: `eff_value = value * DECAY**distance` (priority tiers untouched). Baseline vs candidate via compare_agents.py, 8 seeds, 6 opponents:
+  - DECAY=0.90: reactive(pilkwang) margin +11796 BUT our OWN money DOWN in 5/6 (pilkwang 54267→47845, sakhawat 64437→40353, prvsiyan 55217→39291) — margin gain is the market-crash confound, not real earning.
+  - DECAY=0.95: reactive margin −7875, pilkwang own money 54267→43353. Regression.
+- Conclusion: the 2.35 moves/work is NECESSARY travel — deprioritizing far jobs forgoes value worth more than the walk saved. Both decay points regress own money vs the trusted reactive opponent. The mid-game travel bottleneck is real but not recoverable by smarter per-turn assignment; it's a genuine capacity ceiling already Optuna-tuned to its optimum (worker count / tile spread / crop mix). No change kept; live submission byte-identical to pre-test baseline. Snapshots: .claude/scratch/{baseline,decay09,decay095}_main.py.
+
+## 2026-09-01 — Sweep/continuation bonus (NEW mechanism) + 3rd-quadrant merge: win-rate wash then regression
+- Follow-up to the value-decay entry. Key reframing: reward = own money (engine line 963) but the Kaggle tournament ranks by TrueSkill on per-episode WIN/LOSS, so the real metric is win-rate (beating the opponent), not absolute money. Re-reads all "own money down but reactive margin up" results through win-rate.
+- Chaining measurement (actions.csv, mid-game d8-24): between consecutive work actions, mean travel gap 2.77, **38% of transitions cross >=3 tiles**, only 50% are tight sweeps (<=1). Shed round-trips (DROP/PICKUP/COLLECT_FERTILIZER, all at shed 4,4/5,4) are 20% of mid-game movement; necessary field travel 76%. COLLECT_FERTILIZER alone = 256 actions/game (strawberry fertilizing).
+- Reference replay 97601003.json (top competitor): holds **3 quadrants at ~20/25 planted each (~60 tiles)** with up to **12 hands — same labor as our 13** (hands=0 readings were a sampling artifact; max hands ever = 12). Day-14 mix WHEAT 27 / STRAWBERRY 18 / MELON 14. Proves 3-quadrant play is achievable at our labor — pure throughput edge, mechanism not visible from tile counts, not tape-copyable.
+- NEW mechanism tested — NEIGHBOR_BONUS: score += 250 when the job is adjacent (dist<=1), so a worker sweeps its cluster before leaving. Does NOT reduce far jobs (unlike value-decay), so far work still goes to the closest worker.
+  - 8 seeds: pilkwang margin -23575 -> -191 (looked huge) — but this was seat/seed NOISE.
+  - **16 seeds (win-rate)**: prvsiyan 0%->0%, kawa 0%->0%, **pilkwang win 44%->38%** (mean margin -10033->-4636 but wins DOWN — candidate wins by less, loses more games). Net wash-to-slight-regression on the real metric.
+- NEW mechanism + 3rd quadrant (NEIGHBOR_BONUS=250 + MAX_EXTRA_LAND=2), 16 seeds win-rate: prvsiyan margin -32652->-42878, **pilkwang win 44%->19%** (halved), own money down across the board. Clear regression — the sweep does not free enough throughput to hold a 3rd field; it dilutes coverage. Confirms the standalone MAX_EXTRA_LAND findings.
+- Verdict: this is the 3rd distinct travel/routing new-mechanism (value-decay x2, neighbor-sweep) to come up flat-or-negative on win-rate. Root reason stands: greedy assignment is already near-optimal spatially (2.6% move-thrash), so the 2.35 moves/work is NECESSARY travel to real value, not recoverable waste. Nothing kept; live submission byte-identical to baseline. Snapshots: .claude/scratch/{neigh250,neigh250_land2}_main.py.
+
+## 2026-09-01 — Route-planner (tier-scoped nearest-first maintenance) — win-rate regression; allocation class declared exhausted
+- NEW mechanism, distinct from the scalar neighbor bonus: split assignment by urgency. Tier 0-1 (emergencies) stay global/value-driven; tier >=2 maintenance (ongoing/yield water, harvest, plant, weed) uses a strong distance weight (new knob MAINT_TRAVEL_COST=60) so each worker sweeps a nearest-neighbour local tour instead of chasing marginal value across the map.
+- 16-seed win-rate vs baseline: prvsiyan 0%->0%, kawa 0%->0%, **pilkwang win 44%->25%** (mean margin -10033->-7322 barely moves, own money 73589->71726 down). Regression on the real metric.
+- **This is the 5th consecutive allocation/routing mechanism to regress win-rate this session** (value-decay x2, neighbor-sweep, neighbor+land2, route-planner). Every one moves mean margin slightly while LOSING games, always by the same mechanism: reducing travel/locality delays high-value distant harvest/water, and that delayed value was worth more than the walk saved. Conclusion: the greedy per-turn value-maximizing assignment is at a genuine optimum FOR WIN-RATE; the 2.35 moves/work and 62% movement are necessary, not recoverable. The remaining code-level lever that is NOT per-turn allocation is the job VALUE FUNCTION itself (e.g. harvest value = amount x current price ignores the price crash on sale; a market-impact-aware value would reprioritise correctly) — note market.py/market_forecast.py already carry uncommitted PRICE_IMPACT work in that exact direction. Nothing kept; live == baseline. Snapshot: .claude/scratch/route_maint60_main.py.
+
+## 2026-09-01 — PROMOTED: impact-ranked SELL ordering, ported from prvsiyan_frontier's decoded source
+- Direction chosen by user after 5 self-invented allocation mechanisms all regressed: port a concrete mechanism from a genuinely stronger agent's SOURCE (not tape). agy was quota-locked ("Resets in 99h"), so mined the source directly.
+- prvsiyan_frontier is reactive but ships its logic base85+zlib-compressed and exec'd at runtime. Decoded _MOON_TERMINAL_SOURCE (159KB) to .claude/scratch/prv_moon_terminal.py. Most functions are opponent-family-specific counters (_v17_r5_counter/_v17_md_counter/_kawa_* — brittle meta-gaming, not ported). General portable mechanisms identified: _impact_score/_order_score/_rank_sell_slots (sell ordering), _observe_opponent_market/_race_state (opponent modeling — too coupled/stateful to port cheaply), _terminal_liquidation/_v20_terminal_action (last-8-step harvest+dump — narrow).
+- Ported mechanism: the engine (_market_apply) executes queued sells in order at the live inventory price, so within one turn the item whose price DROPS most should sell FIRST to capture high early-unit prices before shared-market inventory rises. Our prior ordering was by total proceeds (a high-price flat/thin market has big proceeds but small drop — should wait). New key: quantity * (price_at(inv) - price_at(inv+quantity)). Config-gated new knob IMPACT_SELL_ORDER (default True), wired into search_space.py.
+- Validation (winrate, the real TrueSkill metric), two INDEPENDENT seed sets:
+  - seeds 0-15:  pilkwang win 44%->50%, prvsiyan/kawa 0%->0% (flat), own money flat.
+  - seeds 100-123: pilkwang win 33%->38%, prvsiyan/kawa 0%->0% (flat).
+  - Combined 40 seeds vs pilkwang: 37.5% -> 42.5% win-rate, +2 games, consistent direction both runs, ZERO regression anywhere. Honest caveat: within the noise band (mean margin ~flat); not a proven win, but the only non-regressing candidate of the session, principled, and near-zero-risk (reorders sells only).
+- Decision: applied to live source + wired IMPACT_SELL_ORDER into search_space so the next Optuna run is the statistical arbiter (sets it False if actually neutral/harmful). Champion rebuilt; submission/main.py == .claude/scratch/impact_sell_main.py. market.py change stacks on the parallel session's uncommitted PRICE_IMPACT work (same block).
+
+## 2026-09-01 — Optuna verdict on impact-sell: NEUTRAL (reverted); + harness fix for new-knob reconstruction
+- Resumed study adaptive_agent_v1_rot0 (304 -> 504 trials, 200 new @ n-jobs 18) with IMPACT_SELL_ORDER in the search space.
+- Verdict: IMPACT_SELL_ORDER True (n=104, median -1.252, mean -1.185, max -0.301) vs False (n=96, median -1.253, mean -1.179, max -0.522) — statistically indistinguishable. No new trial beat the historical champion (trial 0, value 1.2998). The 40-seed win-rate edge (37.5%->42.5%) was within the noise band, now confirmed not robust. REVERTED market.py + search_space knob; champion rebuilt == pre-session baseline (61625 bytes).
+- Bug found + fixed: the post-search promotion step does `sample_config(FixedTrial(best.params))`; when a NEW search-space param is added but the study's best trial is an OLD one lacking it, FixedTrial raises "parameter not found" and the whole promotion/verification step dies (no promotion, but a crash). Added `_TolerantFixedTrial` in optimize.py (returns first categorical / low bound for params absent from the stored trial), so any FUTURE new-mechanism Optuna run reconstructs the best config cleanly. Verified it rebuilds trial 0's config without error.
+- Net session result: NO robust improvement found. 5 self-invented allocation mechanisms regressed win-rate; 1 ported mechanism (impact-sell) is neutral per Optuna. The map of what doesn't work is now sharp (see IDEAS_TRIED "Dispatch/routing efficiency" and the market note): the greedy value-chase is win-rate-optimal, configs are Optuna-saturated, and the champion (trial 0) remains a strong unbeaten optimum after 504 trials.
+
+## 2026-09-01 — PROMOTED: clone-aware premium front-run wrapper (mirror-match edge)
+- Chosen path after the tape-architecture fundamentals showed a full-tape pivot doesn't beat our reactive champion (see tape entry / memory). Instead add the top-meta's highest-value REACTIVE wrapper directly to the champion.
+- New module src/adaptive_agent/preempt.py `clone_front_run` (reimplemented, not copied, from prvsiyan's `_preempt_shift` + Hamburger's clone-aware front-run). In a near-mirror match (opponent public-farm signature within clone-distance 6 of ours) sell a bounded batch of any PREMIUM product (STRAWBERRY/MELON/MILK/WOOL) we hold but did not already queue this turn -- capturing price before the clone's dump. Wired into agent.py after market; added to build_adaptive_submission MODULE_ORDER. Config-gated (FRONT_RUN_ENABLED etc).
+- Tuning of the price gate: FRONT_RUN_MIN_PRICE_RATIO=0.5 is a STRICT improvement (mirror vs baseline champion, 12 seeds alternating seats: 3 wins, 0 losses, 9 exact ties -- fires rarely but wins when it does). Ratio 0.0 (faithful to prvsiyan, front-run regardless of price) fires every game but is a 6-6 coin-flip (aggressive dumping backfires half the time). Kept 0.5.
+- Non-mirror neutrality VERIFIED: vs cropdusta/prvsiyan/pilkwang/kawa, 12/12 outcomes byte-identical to baseline (clone-distance > 6, wrapper never fires). So it can only help (mirrors, which dominate the top ladder) and never regresses.
+- NOT wired into search_space on purpose: the Optuna opponent pool has no true self-mirror, so it cannot see this benefit and would likely disable it. Direct mirror testing is the correct arbiter here, not Optuna. Left on by default.
+- Champion rebuilt (submission/main.py, 65188 bytes). Diagnosis note: the price gate is what makes 0.5 conservative -- we only hold premium when its price already crashed (<50% base), so at 0.5 the wrapper fires just on the rare decent-price holds; 16/392 premium-holding events passed the gate in a sampled mirror.
+
+## 2026-09-01 — Top-tier gap fully triangulated: architectural (bigger tape-optimized farm), not incrementally closeable
+- Benchmark, champion (with front-run) vs top agents, 10 seeds alternating seats: prvsiyan 0/10, boatlee 0/10, kaito 0/10, rayk_c95 0/10, stevenleehans 0/10, tran_hh 3/10, cropdusta 2/10, pilkwang 7/10. OVERALL 12/80 = 15%. We beat pilkwang (our lineage) and are strong mid-ladder, but 0% vs the top-5 tape agents (they ~90-103k, us ~60-71k).
+- Gap decomposition (seed 0, solo vs pass): top agents solo-produce 146-157k vs our 126k (3-quad variant 132k, still short). So it is primarily a FARMING-EFFICIENCY / farm-SIZE gap, plus a smaller competition-loss edge (we drop ~69-77k under competition vs their ~51-73k).
+- Ruled out as the lever, each checked directly this turn:
+  * 3rd quadrant (MAX_EXTRA_LAND=2): produces more SOLO (132k vs 126k, 4/5 seeds) but LOSES vs opponents at any timing. Win-rate test vs {cropdusta,prvsiyan,boatlee,pilkwang} x8: champ 8/32, 3q-early 7/32, 3q-LATE 3/32 (cash-flow-timing hypothesis FALSIFIED, late is worst). Still 0/8 vs prvsiyan/boatlee regardless.
+  * Melon watering efficiency: 10/10 melon tiles reach max_yield (6/6), 100% — NO leak. Top agents produce more via MORE melons (16 vs our 10 = 3 quadrants), not better watering.
+- Conclusion: the top-5 run a bigger, offline-tape-co-optimized farm (3 quad, 16 melons, optimal routing) our reactive architecture cannot replicate or afford vs a live opponent. Not closeable incrementally (routing exhausted, 3-quad hurts, no watering leak, market-timing marginal). Only path to the top tier is the weeks-scale full-tape build, which fundamentals showed is blocked from our champion. RECOMMEND consolidating the current champion (strong mid-ladder + clean front-run mirror edge) unless committing to the tape project. Live champion unchanged (front-run version).

@@ -32,6 +32,31 @@ from .config import (
 )
 from .search_space import load_champion_config, sample_config
 from .scoring import make_objective, DEFAULT_WIN_SCALE
+
+
+class _TolerantFixedTrial(optuna.trial.FixedTrial):
+    """A FixedTrial that supplies a sensible default for any parameter absent
+    from the stored trial, instead of raising. This lets us reconstruct a full
+    config from an OLD best trial after new knobs were added to the search space
+    -- otherwise `sample_config` hits a suggest_*() for a key the old trial
+    never recorded and the whole promotion step dies. Missing categoricals take
+    the first choice; missing int/float take the low bound (both match how a new
+    knob is expected to default before it has been searched)."""
+
+    def suggest_categorical(self, name, choices):
+        if name not in self.params:
+            return choices[0]
+        return super().suggest_categorical(name, choices)
+
+    def suggest_int(self, name, low, high, **kwargs):
+        if name not in self.params:
+            return low
+        return super().suggest_int(name, low, high, **kwargs)
+
+    def suggest_float(self, name, low, high, **kwargs):
+        if name not in self.params:
+            return low
+        return super().suggest_float(name, low, high, **kwargs)
 from .verification import verify_candidate, HoldoutGate
 
 
@@ -181,7 +206,7 @@ def main():
     print(f"\nSearch's own best trial margin (noisy, {args.episodes_per_opponent} episodes x {len(opponent_names)}-opponent pool): {best.value:.4f}")
     print(f"Best params: {json.dumps(best.params, indent=2)}")
 
-    merged = sample_config(optuna.trial.FixedTrial(best.params))
+    merged = sample_config(_TolerantFixedTrial(best.params))
 
     print(f"\nRunning dedicated verification: {args.verification_episodes} episodes, candidate vs champion only...")
     wins, losses, ties, verify_margin = verify_candidate(merged, champion_config, args.verification_episodes, seeded=args.seeded)

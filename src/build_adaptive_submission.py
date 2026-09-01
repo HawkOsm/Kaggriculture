@@ -44,6 +44,7 @@ MODULE_ORDER = [
     "dispatch.py",
     "farm_plan.py",
     "market.py",
+    "preempt.py",
     "agent.py",
 ]
 

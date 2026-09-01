@@ -2,6 +2,7 @@ from .config import get_config
 from .state import _role_plan
 from .dispatch import _unit_actions
 from .market import _market_actions, _schedule_market_adjustment
+from .preempt import clone_front_run
 
 class Dispatcher:
     def __init__(self, config=None):
@@ -20,7 +21,8 @@ class Dispatcher:
         field = _unit_actions(obs, self.config, farm, private, roles)
         market = _market_actions(obs, self.config, farm, private, roles, field)
         market = _schedule_market_adjustment(obs, self.config, farm, private, market)
-        
+        market = clone_front_run(obs, self.config, farm, private, market)
+
         return {
             "farmer": field["farmer"],
             "hands": field["hands"],

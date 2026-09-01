@@ -61,6 +61,10 @@ DEFAULT_OPPONENTS = {
     "kawa": "src/opponents/kawa_route_agent.py",
     # reactive (live, price-aware) -- the confound-detector
     "pilkwang": "src/opponents/pilkwang_agent.py",
+    # Held-out
+    "saiteja": "src/opponents/saiteja_agent.py",
+    "romanrozen": "src/opponents/romanrozen_agent.py",
+    "sakhawat": "src/opponents/sakhawathossen_agent.py",
 }
 DEFAULT_SEEDS = [1, 2, 3, 4, 5]
 
