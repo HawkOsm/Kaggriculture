@@ -212,7 +212,17 @@ def _market_actions(obs, config, farm, private, roles, field):
             for offset in range(quantity)
         )
         sells.append((proceeds, item, quantity))
-    sells.sort(reverse=True)
+    # Price-impact SELL ordering: adapted from raykkretzschmar's public
+    # meta-notebook (Code-tab-shared, OSI-licensed per RULES.md 3.6; see
+    # CREDITS.md for the same reimplementation-not-copy standard already
+    # applied to pilkwang's architecture) -- "C71 Giovanni Impact"/C94/C95
+    # sections describe racing steep-decay premium products (melon,
+    # strawberry, milk, wool) ahead of an anticipated shared-market dump,
+    # while leaving thinner two-sided markets (wheat, fertilizer -- ones
+    # opponents also buy) on ordinary proceeds-based timing. Config-driven,
+    # default () so this is a no-op until searched/enabled.
+    priority_items = set(_cfg(config, "PRICE_IMPACT_PRODUCTS", ()))
+    sells.sort(key=lambda entry: (entry[1] in priority_items, entry[0]), reverse=True)
     for proceeds, item, quantity in sells:
         if len(orders) >= max_orders:
             break

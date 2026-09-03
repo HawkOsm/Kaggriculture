@@ -143,7 +143,11 @@ def _role_plan(obs, config, farm):
         if not zone:
             continue
         cells = sorted(zone["crops"], key=_column_major_key(quadrant, board_size))
-        fixed = dict(CROP_MIX[quadrant])
+        fixed = (
+            dict(get_config(config, "CROP_MIX_NW", CROP_MIX["NW"]))
+            if quadrant == "NW"
+            else dict(CROP_MIX[quadrant])
+        )
         if quadrant == "NW":
             fixed["MELON"] = min(melon_target, len(cells))
         strawberry_count = max(0, len(cells) - sum(fixed.values()))

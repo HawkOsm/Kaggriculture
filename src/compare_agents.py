@@ -59,6 +59,9 @@ DEFAULT_OPPONENTS = {
     # fixed-tape (price-blind, see module docstring)
     "prvsiyan_frontier": "src/opponents/prvsiyan_frontier_agent.py",
     "kawa": "src/opponents/kawa_route_agent.py",
+    # fixed-tape reconstructed from public episode 97601003 ("Crop Dusta" winner);
+    # strong near-even benchmark, local eval only (not in our submission)
+    "cropdusta": "src/opponents/cropdusta_97601003_agent.py",
     # reactive (live, price-aware) -- the confound-detector
     "pilkwang": "src/opponents/pilkwang_agent.py",
     # Held-out
