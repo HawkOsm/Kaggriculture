@@ -9,6 +9,38 @@ where effort goes, and — just as importantly — where it stops going.
 
 ---
 
+## FINAL STATUS — 2026-09-03 (investigation wrapped)
+
+After exhaustively testing every tractable path, the strategic picture is settled. The medal
+gap is **architectural, not a tuning or learning problem**, and the only approach that clears it
+is one we chose not to ship. Verdicts (all measured this session, not asserted):
+
+- **RL — dead.** Config-tuning RL null, state-conditioned RL null, behavior-cloning→PPO 0%,
+  reward-shaped RL collapsed into a degenerate farmer (planted but never watered). The game's
+  sparse reward + huge action space + 720-step horizon defeats RL at our compute; the top teams
+  don't use RL either.
+- **Hyperparameter tuning — saturated.** Optuna already optimizes a win/loss-flavoured objective;
+  the reactive architecture's knobs are at their optimum. More search is null.
+- **The gap is architectural.** Measured: our reactive dispatcher runs moves/work ≈ 3.1 vs the top
+  tier's ≈ 0.9 — its workers roam because it decides greedily per-turn. No knob fixes that; it's a
+  ceiling of the "react each turn" design. Loss to top-2 = late-game production density + a ~36k
+  market-suppression cascade (perishables sold after the price crashed), all downstream of the
+  movement inefficiency.
+- **Replay distillation WORKS (but rejected on principle).** Confirmed the top of the ladder is
+  distilled public replays + thin routing (legal per RULES §2.4/2.11/2.10 — see
+  [`../src/distill/README.md`](../src/distill/README.md)). We built it: a single distilled tape
+  (stevenleehans #113) scores ~0.78 vs the local pool (~6–7× the champion), beating even prvsiyan
+  and boatlee. But it is copying an expert's game, not building a better player — no learning, no
+  new agent — so it is documented in `src/distill/` and **not shipped**.
+
+**Endpoint:** the deliverable is the reactive `adaptive_agent` champion (our own from-scratch work).
+It does not medal (a medal requires the distillation approach), but it is genuine and far above the
+stale live submission. No further RL/tuning/tape effort is planned. See the memory files
+(`project_movement_gap`, `project_replay_distillation`, `project_rl2_bc_delegation`) for the full
+receipts.
+
+---
+
 ## The honest position
 
 **Revised 2026-08-22 (later same day)** after surveying 15 public competitor agents — see

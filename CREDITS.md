@@ -7,8 +7,8 @@ Third-party code used in this repo, and exactly how it's used.
 **`src/adaptive_agent/`** (as of 2026-08-27, see `docs/tests/LOG.md`) is a from-scratch,
 independently-implemented adaptation of the architecture used by
 **`src/opponents/pilkwang_agent.py`**, itself pulled from a public notebook on this
-competition's own Code tab: Pilkwang Kim, ["Kaggriculture: Structured Economic
-Policy"](https://www.kaggle.com/code/pilkwang/kaggriculture-structured-economic-policy).
+competition's own Code tab: Pilkwang Kim, [&#34;Kaggriculture: Structured Economic
+Policy&#34;](https://www.kaggle.com/code/pilkwang/kaggriculture-structured-economic-policy).
 Per this competition's own Foundational Rules (§3.6, `docs/RULES.md`), code publicly shared
 on the Code tab is deemed licensed under an OSI-approved license — the source notebook was
 never verbatim-copied into our submission; the architectural concepts (staged
@@ -37,20 +37,20 @@ pull-time), and the real, verified result against the current `adaptive_agent` c
 (4-6 seeded episodes, `src/tuning/simulation.py`, not self-reported). See
 `docs/tests/LOG.md`'s 2026-08-27 opponent-pool-refresh entry for the full methodology.
 
-| File | Author | LB rank/score (2026-08-27) | Champion result |
-|---|---|---|---|
-| `kawa_route_agent.py` | boatlee | live rank moved since pull, ~2500+ tier | 0W-4L, avg -25,219 |
-| `boatlee_v16_agent.py` | boatlee | #83/6638, 2484.9 | 0W-4L, avg -30,107 |
-| `rayk_c95_agent.py` | Rayk Kretzschmar | #146/6638, 2354.8 | 0W-4L, avg -24,495 |
-| `saiteja_agent.py` | Sai Teja Bandaru | #2243/6638, 1203.8 | 0W-4L, avg -13,228 |
-| `kaito_agent.py` | Kaito Fukami | #184/6638, 2287.4 | 0W-4L, avg -20,106 |
-| `tran_hh_agent.py` | Tran H Hoang | #1027/6638, 1703.7 | 0W-4L, avg -11,075 |
-| `pilkwang_agent.py` | Pilkwang Kim | #1179/6638, 1645.7 | 0W-4L, avg -7,790 |
-| `romanrozen_agent.py` | Roman Rozen (team) | #2047/6638, 1321.2 | 0W-4L, avg -19,162 |
-| `prvsiyan_frontier_agent.py` | prvsiyan | #28/6638, 2668.8 | 0W-4L, avg -32,352 |
-| `sakhawathossen_agent.py` | Sakhawat Hossen | #1923/6638, 1376.6 | 0W-4L, avg -24,189 |
-| `stevenleehans_agent.py` | Lord Momo / stevenleehans | #333/6638, 2101.6 | 0W-6L, avg -32,670 |
-| `premaananda108_agent.py` | Prema Ananda | #2961/6638, 890.5 | 2W-2L, avg +411 |
+| File                           | Author                    | LB rank/score (2026-08-27)              | Champion result    |
+| ------------------------------ | ------------------------- | --------------------------------------- | ------------------ |
+| `kawa_route_agent.py`        | boatlee                   | live rank moved since pull, ~2500+ tier | 0W-4L, avg -25,219 |
+| `boatlee_v16_agent.py`       | boatlee                   | #83/6638, 2484.9                        | 0W-4L, avg -30,107 |
+| `rayk_c95_agent.py`          | Rayk Kretzschmar          | #146/6638, 2354.8                       | 0W-4L, avg -24,495 |
+| `saiteja_agent.py`           | Sai Teja Bandaru          | #2243/6638, 1203.8                      | 0W-4L, avg -13,228 |
+| `kaito_agent.py`             | Kaito Fukami              | #184/6638, 2287.4                       | 0W-4L, avg -20,106 |
+| `tran_hh_agent.py`           | Tran H Hoang              | #1027/6638, 1703.7                      | 0W-4L, avg -11,075 |
+| `pilkwang_agent.py`          | Pilkwang Kim              | #1179/6638, 1645.7                      | 0W-4L, avg -7,790  |
+| `romanrozen_agent.py`        | Roman Rozen (team)        | #2047/6638, 1321.2                      | 0W-4L, avg -19,162 |
+| `prvsiyan_frontier_agent.py` | prvsiyan                  | #28/6638, 2668.8                        | 0W-4L, avg -32,352 |
+| `sakhawathossen_agent.py`    | Sakhawat Hossen           | #1923/6638, 1376.6                      | 0W-4L, avg -24,189 |
+| `stevenleehans_agent.py`     | Lord Momo / stevenleehans | #333/6638, 2101.6                       | 0W-6L, avg -32,670 |
+| `premaananda108_agent.py`    | Prema Ananda              | #2961/6638, 890.5                       | 2W-2L, avg +411    |
 
 Our own live rank/score today: **#4809/6638, 496.2** (`HawkOsm`) — this reflects
 whatever submission is currently live on Kaggle, not `adaptive_agent`'s local strength;
@@ -63,8 +63,8 @@ progress, not a rubber-stamp pool.
 
 - **`src/farm_utils.py`**'s movement helpers, and the original agent this repo evolved
   from, are based on the official Kaggle-provided starter notebook: Bovard
-  Doerschuk-Tiberi, ["Kaggriculture: Getting
-  Started"](https://www.kaggle.com/code/bovard/kaggriculture-getting-started).
+  Doerschuk-Tiberi, [&#34;Kaggriculture: Getting
+  Started&#34;](https://www.kaggle.com/code/bovard/kaggriculture-getting-started).
 - **`src/opponents/melon_maxxer.py`, `multi_crop.py`, `quick_start_agent.py`** (removed
   2026-08-21, see `docs/tests/LOG.md`) were verbatim/lightly-adapted copies of starter-kit
   reference agents. Replaced once real, much stronger opponents (below) were available —
@@ -86,17 +86,17 @@ batch) were *excluded* as near-duplicates of agents already in the pool.
 
 Each file's own docstring carries this same attribution; this table is just the summary.
 
-| File | Source notebook | Author | Underlying strategy credited to |
-|---|---|---|---|
-| `kawa_route_agent.py` | [V20-Adaptive-R1 \| Multi-Route Agent](https://www.kaggle.com/code/boatlee/v20-adaptive-r1-multi-route-agent) | boatlee | "Kawa" (reconstruction from 12 public replays, per the notebook's own docstring) |
-| `boatlee_v16_agent.py` | [V16-RC5 \| High-Score 8C/4S Premium Market Lead](https://www.kaggle.com/code/boatlee/v16-rc5-high-score-8c-4s-premium-market-lead) | boatlee | No player-reconstruction claim in the source notebook — appears to be boatlee's own front-running/market-timing strategy, distinct in mechanism from V20's multi-route classifier despite sharing some low-level utility code |
-| `rayk_c95_agent.py` | [Kaggriculture: Findings from Zero to Top Meta](https://www.kaggle.com/code/raykkretzschmar/kaggriculture-findings-from-zero-to-top-meta) | Rayk Kretzschmar | "Lev Neganov episode 91587143 player 1" (distilled trajectory, per the notebook), plus the author's own added controller logic |
-| `saiteja_agent.py` | [Kaggriculture \| Pure Architecture (2600+ Elo) V3](https://www.kaggle.com/code/saitejabandaruin/kaggriculture-pure-architecture-2600-elo-v3) | Sai Teja Bandaru | "Public automatylicza schedule replica, reconstructed from 48 public games" (per the notebook's own docstring) |
-| `kaito_agent.py` | [25/27 Strict-Future \| v27 Midgame Meta Reset](https://www.kaggle.com/code/kaitofukami/25-27-strict-future-v27-midgame-meta-reset) | Kaito Fukami | "team Ezzzzzekki, submission 55390428, episode 91493566, seat 0" (per the notebook's own machine-readable attribution card) |
-| `pilkwang_agent.py` | [Kaggriculture: Structured Economic Policy](https://www.kaggle.com/code/pilkwang/kaggriculture-structured-economic-policy) | pilkwang | pilkwang's own deterministic scenario-aware economic policy |
-| `romanrozen_agent.py` | [Strong Barnyard Economist](https://www.kaggle.com/code/romanrozen/strong-barnyard-economist) | romanrozen | romanrozen's own adaptive replay controller (season route + near-clone premium preemption) |
-| `prvsiyan_frontier_agent.py` | Composite of three notebooks: [Kaggriculture Frontier \| The Soil Remembers Rain](https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-soil-remembers-rain), [Kaggriculture Frontier \| The Moon Counts Melons](https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-moon-counts-melons), [Kaggle Frontier Lab \| Strategy Improvement](https://www.kaggle.com/code/prvsiyan/kaggle-frontier-lab-strategy-improvement) | prvsiyan | prvsiyan's "Frontier" strategy family -- the shipped agent composes the soil/route module, the moon/terminal-liquidation module, and the strategy-improvement module from these three notebooks (see the `_RC5_NS`/`_MOON_TERMINAL_NS`/`_MODAL_NS` namespaces in the file) |
-| `tran_hh_agent.py` | No source notebook -- direct reconstruction from public replay [episode 89674601](https://www.kaggle.com/competitions/kaggriculture/leaderboard), seat 0 | n/a (replay-derived, not a notebook) | Tran H Hoang (per the replay's own player attribution) |
+| File                           | Source notebook                                                                                                                                                                                                                                                                                                                                                                                                                          | Author                               | Underlying strategy credited to                                                                                                                                                                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kawa_route_agent.py`        | [V20-Adaptive-R1 \| Multi-Route Agent](https://www.kaggle.com/code/boatlee/v20-adaptive-r1-multi-route-agent)                                                                                                                                                                                                                                                                                                                             | boatlee                              | "Kawa" (reconstruction from 12 public replays, per the notebook's own docstring)                                                                                                                                                                                                |
+| `boatlee_v16_agent.py`       | [V16-RC5 \| High-Score 8C/4S Premium Market Lead](https://www.kaggle.com/code/boatlee/v16-rc5-high-score-8c-4s-premium-market-lead)                                                                                                                                                                                                                                                                                                       | boatlee                              | No player-reconstruction claim in the source notebook — appears to be boatlee's own front-running/market-timing strategy, distinct in mechanism from V20's multi-route classifier despite sharing some low-level utility code                                                  |
+| `rayk_c95_agent.py`          | [Kaggriculture: Findings from Zero to Top Meta](https://www.kaggle.com/code/raykkretzschmar/kaggriculture-findings-from-zero-to-top-meta)                                                                                                                                                                                                                                                                                                 | Rayk Kretzschmar                     | "Lev Neganov episode 91587143 player 1" (distilled trajectory, per the notebook), plus the author's own added controller logic                                                                                                                                                  |
+| `saiteja_agent.py`           | [Kaggriculture \| Pure Architecture (2600+ Elo) V3](https://www.kaggle.com/code/saitejabandaruin/kaggriculture-pure-architecture-2600-elo-v3)                                                                                                                                                                                                                                                                                             | Sai Teja Bandaru                     | "Public automatylicza schedule replica, reconstructed from 48 public games" (per the notebook's own docstring)                                                                                                                                                                  |
+| `kaito_agent.py`             | [25/27 Strict-Future \| v27 Midgame Meta Reset](https://www.kaggle.com/code/kaitofukami/25-27-strict-future-v27-midgame-meta-reset)                                                                                                                                                                                                                                                                                                       | Kaito Fukami                         | "team Ezzzzzekki, submission 55390428, episode 91493566, seat 0" (per the notebook's own machine-readable attribution card)                                                                                                                                                     |
+| `pilkwang_agent.py`          | [Kaggriculture: Structured Economic Policy](https://www.kaggle.com/code/pilkwang/kaggriculture-structured-economic-policy)                                                                                                                                                                                                                                                                                                                | pilkwang                             | pilkwang's own deterministic scenario-aware economic policy                                                                                                                                                                                                                     |
+| `romanrozen_agent.py`        | [Strong Barnyard Economist](https://www.kaggle.com/code/romanrozen/strong-barnyard-economist)                                                                                                                                                                                                                                                                                                                                             | romanrozen                           | romanrozen's own adaptive replay controller (season route + near-clone premium preemption)                                                                                                                                                                                      |
+| `prvsiyan_frontier_agent.py` | Composite of three notebooks:[Kaggriculture Frontier \| The Soil Remembers Rain](https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-soil-remembers-rain), [Kaggriculture Frontier \| The Moon Counts Melons](https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-moon-counts-melons), [Kaggle Frontier Lab \| Strategy Improvement](https://www.kaggle.com/code/prvsiyan/kaggle-frontier-lab-strategy-improvement) | prvsiyan                             | prvsiyan's "Frontier" strategy family -- the shipped agent composes the soil/route module, the moon/terminal-liquidation module, and the strategy-improvement module from these three notebooks (see the`_RC5_NS`/`_MOON_TERMINAL_NS`/`_MODAL_NS` namespaces in the file) |
+| `tran_hh_agent.py`           | No source notebook -- direct reconstruction from public replay[episode 89674601](https://www.kaggle.com/competitions/kaggriculture/leaderboard), seat 0                                                                                                                                                                                                                                                                                   | n/a (replay-derived, not a notebook) | Tran H Hoang (per the replay's own player attribution)                                                                                                                                                                                                                          |
 
 ## Near-tier opponent agents (`src/opponents/`)
 
@@ -108,10 +108,10 @@ opponents near their own rating, not the strongest bots, so a benchmark pool tha
 uniformly 2500+ tells us nothing about whether we're winning the games that actually
 move our rating right now.
 
-| File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-21) |
-|---|---|---|---|
-| ~~`rajan1673_agent.py`~~ **REMOVED 2026-08-27** | [kagriculture](https://www.kaggle.com/code/rajan1673/kagriculture) | rajan jha | #4478/5684, 434.7 |
-| ~~`chaitanyajamble_agent.py`~~ **REMOVED 2026-08-27** | [Kaggriculture](https://www.kaggle.com/code/chaitanyajamble/kaggriculture) | Chaitanya Jamble | #4058/5684, 507.2 |
+| File                                                           | Source notebook                                                           | Author           | Leaderboard rank/score at pull (2026-08-21) |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------- | ------------------------------------------- |
+| ~~`rajan1673_agent.py`~~ **REMOVED 2026-08-27**       | [kagriculture](https://www.kaggle.com/code/rajan1673/kagriculture)         | rajan jha        | #4478/5684, 434.7                           |
+| ~~`chaitanyajamble_agent.py`~~ **REMOVED 2026-08-27** | [Kaggriculture](https://www.kaggle.com/code/chaitanyajamble/kaggriculture) | Chaitanya Jamble | #4058/5684, 507.2                           |
 
 **Both removed 2026-08-27**: `adaptive_agent` now beats both decisively (4W-0L each,
 avg margin well into six figures) -- see `docs/tests/LOG.md`'s opponent-pool-refresh
@@ -172,12 +172,12 @@ agents in between near-tier and the 2500+ pool. **Not yet wired into
 `OPPONENT_POOL`/`OPPONENT_WEIGHTS`** -- landed as files + attribution only,
 pending a deliberate decision on how to weight them in.
 
-| File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-22) | Tier |
-|---|---|---|---|---|
-| ~~`ektarr_agent.py`~~ **REMOVED 2026-08-27** | [Diversified Scheduler Baseline \| Kaggriculture](https://www.kaggle.com/code/ektarr/diversified-scheduler-baseline-kaggriculture) | Maxim | #3831/5684, 554.5 | near-tier |
-| ~~`nagatakengo_agent.py`~~ **REMOVED 2026-08-27** | [Kaggriculture](https://www.kaggle.com/code/nagatakengo/kaggriculture) | nk | #4567/5684, 428.5 | near-tier |
-| `premaananda108_agent.py` | [Economics-Driven Rule Agent (EcoBot v2)](https://www.kaggle.com/code/premaananda108/economics-driven-rule-agent-ecobot-v2) | Prema Ananda | #2604/5684, 850.4 | mid-tier |
-| `sakhawathossen_agent.py` | [Kaggriculture Final Hybrid Champion](https://www.kaggle.com/code/sakhawathossen/kaggriculture-final-hybrid-champion) | Sakhawat Hossen | #1421/5684, 1601.9 | strong |
+| File                                                       | Source notebook                                                                                                                   | Author          | Leaderboard rank/score at pull (2026-08-22) | Tier      |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------- | --------- |
+| ~~`ektarr_agent.py`~~ **REMOVED 2026-08-27**      | [Diversified Scheduler Baseline \| Kaggriculture](https://www.kaggle.com/code/ektarr/diversified-scheduler-baseline-kaggriculture) | Maxim           | #3831/5684, 554.5                           | near-tier |
+| ~~`nagatakengo_agent.py`~~ **REMOVED 2026-08-27** | [Kaggriculture](https://www.kaggle.com/code/nagatakengo/kaggriculture)                                                             | nk              | #4567/5684, 428.5                           | near-tier |
+| `premaananda108_agent.py`                                | [Economics-Driven Rule Agent (EcoBot v2)](https://www.kaggle.com/code/premaananda108/economics-driven-rule-agent-ecobot-v2)        | Prema Ananda    | #2604/5684, 850.4                           | mid-tier  |
+| `sakhawathossen_agent.py`                                | [Kaggriculture Final Hybrid Champion](https://www.kaggle.com/code/sakhawathossen/kaggriculture-final-hybrid-champion)              | Sakhawat Hossen | #1421/5684, 1601.9                          | strong    |
 
 **`ektarr`/`nagatakengo` removed 2026-08-27**: both now beaten decisively by `adaptive_agent`
 (4W-0L each, avg margin +110,968 / +100,702) -- no signal left. `premaananda108` (2W-2L,
@@ -188,8 +188,7 @@ kept -- see `docs/tests/LOG.md`'s opponent-pool-refresh entry.
 `%%writefile main.py` / triple-quoted-source-string cells (the two standard
 patterns already used elsewhere in this pool), verbatim aside from adding the
 file's attribution docstring and the `<name>_agent = agent` export alias.
-`nagatakengo_agent.py` is the same, except its original `def agent(obs,
-config):` had no default for `config` -- changed to `config=None` for
+`nagatakengo_agent.py` is the same, except its original `def agent(obs, config):` had no default for `config` -- changed to `config=None` for
 consistency with the rest of the pool (e.g. `pilkwang_agent.py`,
 `saiteja_agent.py`); no other behavior changed. `sakhawathossen_agent.py` was
 extracted from a zlib+base85-compressed embedded string; it is internally
@@ -273,9 +272,9 @@ the whole original 2500+ tier -- no gradient left to tune against in that band. 
 the current live leaderboard (6638 teams, fetched 2026-08-27) and searched for fresh
 opponents scoring well above our own rating with a real public notebook.
 
-| File | Source notebook | Author | Leaderboard rank/score at pull (2026-08-27) |
-|---|---|---|---|
-| `stevenleehans_agent.py` | [Kaggriculture X544 - Nah, I'd Win.](https://www.kaggle.com/code/stevenleehans/kaggriculture-x544-nah-i-d-win) | Lord Momo / stevenleehans | #333/6638, 2101.6 |
+| File                       | Source notebook                                                                                                   | Author                    | Leaderboard rank/score at pull (2026-08-27) |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------- |
+| `stevenleehans_agent.py` | [Kaggriculture X544 - Nah, I&#39;d Win.](https://www.kaggle.com/code/stevenleehans/kaggriculture-x544-nah-i-d-win) | Lord Momo / stevenleehans | #333/6638, 2101.6                           |
 
 Extracted by running the notebook's own emitter cells (a `main.py` producer, base85+zlib
 embedded source, decoded via the notebook's own decode/write logic rather than
@@ -310,26 +309,3 @@ Full detail in `docs/tests/LOG.md`'s 2026-08-27 opponent-pool-refresh entry.
   source) — reusing that as our own submission would misattribute someone else's
   strategy (and, per the reconstructing author, possibly the strategy of a person who
   never published it themselves).
-
-## Near-tier benchmark opponents (added 2026-08-22)
-
-Sourced from the public Kaggriculture leaderboard/notebooks to give the search a pool of
-opponents near our own ~500 score (the existing pool was almost entirely 1700-2700, which
-the win/loss objective saturates against). Local sparring partners only, in
-`src/opponents/`; never submitted, in whole or in part.
-
-| Module | Author | LB score | Used in default search pool |
-|---|---|---|---|
-| ~~`umutdorukztrk_agent.py`~~ | umutdorukztrk | 380.8 | **REMOVED 2026-08-27** |
-| ~~`iamsdt_agent.py`~~ | iamsdt | 398.8 | **REMOVED 2026-08-27** |
-| ~~`kiykhoi_agent.py`~~ | kiykhoi | 401.1 | **REMOVED 2026-08-27** |
-| ~~`mansiaggarwal88_agent.py`~~ | mansiaggarwal88 | 496.4 | **REMOVED 2026-08-27** |
-| ~~`moncefelm_agent.py`~~ | moncefelm | 442.1 | **REMOVED 2026-08-27** |
-| ~~`daisy023_agent.py`~~ | daisy023 | 447.3 | **REMOVED 2026-08-27** |
-
-**All six removed 2026-08-27**: this whole near-~500-rating band is fully saturated --
-`adaptive_agent` now beats every one of them decisively (4W-0L each, avg margin +58,786
-to +128,053, including `moncefelm` which used to beat the old `robust_agent` champion by
-~89k). See `docs/tests/LOG.md`'s opponent-pool-refresh entry for the full sweep and what
-replaced them (the champion currently loses to the entire former 2500+ tier instead --
-that's now the real signal band).
