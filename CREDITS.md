@@ -314,13 +314,18 @@ Full detail in `docs/tests/LOG.md`'s 2026-08-27 opponent-pool-refresh entry.
 
 Kaggle staff confirmed in the competition discussion that "using public replays to train,
 build, inform your submission is allowed and encouraged", and §3.6 deems publicly shared
-competition code OSI-licensed. Bases evaluated//used for calibration, with attribution:
+competition code OSI-licensed. Public agents below were decoded and submitted ONCE EACH purely to CALIBRATE what a
+published notebook actually scores. They are **not** part of our submission: the copies were
+removed from `submission/` and are kept only as local research references under gitignored
+scratch. Result of that calibration: published notebooks are deliberately weakened (author
+LB score vs their published agent's actual score), and all scored BELOW our own distilled
+tape (1318.5):
 
 | source | author / team (LB rank, score at 2026-09-22) | local file |
 | --- | --- | --- |
-| [`kaggriculture-adaptive-public-state-multi-route`](https://www.kaggle.com/code/yamakawanin/kaggriculture-adaptive-public-state-multi-route) — "Adaptive Champion V2 / V21-R1", a replay-derived ensemble (MOON/MUTOY/MUNIB experts + meta-router) | yamakawanin / Roxy (#61, 2826.7) | `submission/main_roxy_base.py` |
-| [`a-wonderful-life`](https://www.kaggle.com/code/hanifnoerrofiq/a-wonderful-life) | hanifnoerrofiq / CROW (#1001, 2409.0) | `.claude/scratch/decoded_agents/hanif_current.py` |
-| [`kaggriculture-frontier-*`](https://www.kaggle.com/code/prvsiyan) | prvsiyan (#1219, 2290.4) | `.claude/scratch/decoded_agents/prvsiyan_current.py` |
+| [`kaggriculture-adaptive-public-state-multi-route`](https://www.kaggle.com/code/yamakawanin/kaggriculture-adaptive-public-state-multi-route) — "Adaptive Champion V2 / V21-R1", a replay-derived ensemble (MOON/MUTOY/MUNIB experts + meta-router) | yamakawanin / Roxy (#61, 2826.7) | decoded ref only (scored 812.2) |
+| [`a-wonderful-life`](https://www.kaggle.com/code/hanifnoerrofiq/a-wonderful-life) | hanifnoerrofiq / CROW (#1001, 2409.0) | decoded ref only (scored 600.0) |
+| [`kaggriculture-frontier-*`](https://www.kaggle.com/code/prvsiyan) | prvsiyan (#1219, 2290.4) | decoded ref only (not submitted) |
 
 Our own contribution is the replay-distillation pipeline in `src/distill/` (2,465 winning
 tapes extracted from public daily ladder dumps of top-40 teams, bit-exact verified) and the
