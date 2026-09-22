@@ -309,3 +309,19 @@ Full detail in `docs/tests/LOG.md`'s 2026-08-27 opponent-pool-refresh entry.
   source) — reusing that as our own submission would misattribute someone else's
   strategy (and, per the reconstructing author, possibly the strategy of a person who
   never published it themselves).
+
+## Public-notebook bases (Code-tab, OSI-licensed per Foundational Rules §3.6)
+
+Kaggle staff confirmed in the competition discussion that "using public replays to train,
+build, inform your submission is allowed and encouraged", and §3.6 deems publicly shared
+competition code OSI-licensed. Bases evaluated//used for calibration, with attribution:
+
+| source | author / team (LB rank, score at 2026-09-22) | local file |
+| --- | --- | --- |
+| [`kaggriculture-adaptive-public-state-multi-route`](https://www.kaggle.com/code/yamakawanin/kaggriculture-adaptive-public-state-multi-route) — "Adaptive Champion V2 / V21-R1", a replay-derived ensemble (MOON/MUTOY/MUNIB experts + meta-router) | yamakawanin / Roxy (#61, 2826.7) | `submission/main_roxy_base.py` |
+| [`a-wonderful-life`](https://www.kaggle.com/code/hanifnoerrofiq/a-wonderful-life) | hanifnoerrofiq / CROW (#1001, 2409.0) | `.claude/scratch/decoded_agents/hanif_current.py` |
+| [`kaggriculture-frontier-*`](https://www.kaggle.com/code/prvsiyan) | prvsiyan (#1219, 2290.4) | `.claude/scratch/decoded_agents/prvsiyan_current.py` |
+
+Our own contribution is the replay-distillation pipeline in `src/distill/` (2,465 winning
+tapes extracted from public daily ladder dumps of top-40 teams, bit-exact verified) and the
+agents built from it (`submission/main_ladder.py`, live score 1304.0).
