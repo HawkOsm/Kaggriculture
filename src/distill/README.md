@@ -24,6 +24,9 @@ a tape baked into the submission is fine; no runtime data fetch).
 | `tape_agent.py` | **the deliverable core**: replay a single distilled tape whole-game |
 | `router_agent.py` | multi-tape profile router (8-turn lock) — the adaptivity enhancement |
 | `package.py` | bake a chosen tape into a self-contained `submission/main_distill.py` |
+| `build_router_v2.py` | prefix-aligned shop router → `submission/main_router_v2.py` (best fully-own agent) |
+| `build_hanif_plus.py` | hanif's public agent + 4 measured patches → `submission/main_hanif_plus.py` (see CREDITS.md) |
+| `build_router.py`, `tape_repair.py`, `improve_hanif.py`, `improve_base.py` | documented negatives (router v1, tape repair, front-run layer, Roxy tape swap); outputs removed from `submission/` |
 
 Large data (`library.json`, ~67MB) stays under `.claude/scratch/distill/` — code lives here.
 

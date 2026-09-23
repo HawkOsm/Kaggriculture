@@ -33,13 +33,28 @@ main.py (reactive)   820.7
 main_roxy_base.py    812.2
 ```
 
+### Update 2026-09-23: hanif base + our patches (`submission/main_hanif_plus.py`)
+Built by `src/distill/build_hanif_plus.py` (4 asserted patches on hanif's public agent, credited in
+CREDITS.md). Not yet submitted. Fresh-seed paired validation (2 blocks x 100 contexts):
+```
+vs prvsiyan_current   +618 / +543 mean margin per game (better in 53/60), wins 7/60 vs base 3/60
+vs hanif mirror       51 W / 9 L of 60   (base hanif: ties)
+guards (roxy, kawa, 2 top tapes)   wins unchanged 78/80, margin down up to ~466
+head-to-head vs main_router_v2: 18/20 wins, mean margin +19002 (plain hanif: identical)
+```
+So hanif_plus is the strongest agent we have (it inherits hanif's 2229.7-level strength), but most of
+that strength is hanif's; router_v2 remains the best agent that is entirely our own work.
+Dead ends from this round: re-routing hanif's 40 prefix-aligned routes (CV gain ~0); grafting our
+replay tapes onto hanif (0 of 2,465 share its opening); 22/40 hanif constants are dead code;
+prvsiyan's clone-race layer never fires vs hanif (its edge is in economy layers).
+Harness: `.claude/scratch/hanif_route/` (common.py, variants.py, anknob.py).
+
 ## IMMEDIATE NEXT STEPS
-1. Submit `submission/main_router_v2.py` as soon as the daily quota allows (resets UTC midnight, ~5/day).
-2. A wider routing fit was running: `.claude/scratch/kaggle_data/router_signal_big.py`
-   (28 continuations x 8 opponents x 10 seeds = 2,240 games) to re-fit the routing map with
-   ~10x bigger per-shop buckets. Rebuild the router from it via `src/distill/build_router_v2.py`
-   (edit the ROUTE dict), then validate OUT-OF-SAMPLE against v2 on seeds never used for fitting.
-   Only ship it if it beats v2 on fresh seeds.
+1. Choose what to submit: `submission/main_hanif_plus.py` (strongest) or
+   `submission/main_router_v2.py` (fully our own). Submit the preferred one LAST.
+2. The wider routing fit for router v2 (`.claude/scratch/kaggle_data/router_signal_big.py`,
+   2,240 games) died without output; rerun it if continuing the router-v2 line, rebuild via
+   `src/distill/build_router_v2.py`, and only ship if it beats v2 on fresh seeds.
 3. Further ideas, in rough value order: more continuations per shop; richer routing signal
    (2-shop sequence, opponent farm composition at step 144); routers over OTHER prefix-aligned
    families (THIRD FARM CLUB 208 @72, Sida Zuo 129 @72, Majkel1337+QQ 66 @72).

@@ -327,6 +327,20 @@ tape (1318.5):
 | [`a-wonderful-life`](https://www.kaggle.com/code/hanifnoerrofiq/a-wonderful-life) | hanifnoerrofiq / CROW (#1001, 2409.0) | decoded ref only (scored 600.0) |
 | [`kaggriculture-frontier-*`](https://www.kaggle.com/code/prvsiyan) | prvsiyan (#1219, 2290.4) | decoded ref only (not submitted) |
 
+### `submission/main_hanif_plus.py` — built ON the hanif base, with our measured modifications
+
+Base: hanifnoerrofiq's public [`a-wonderful-life`](https://www.kaggle.com/code/hanifnoerrofiq/a-wonderful-life)
+(itself an Apache-2.0 derivation chain — thomastschinkel, yhay81, destbreso, aurax7, tetsutani,
+prvsiyan, Dmitrii Gluzdov, Ahmed Berat Ozer — all notices retained verbatim in the file). Built by
+`src/distill/build_hanif_plus.py`, which applies four asserted source patches: enable hanif's own
+disabled `clamp_sells` layer, market-race default horizon 40→48, feed-reserve lookahead 2→1 day,
+day-end sale-race hours (22,23)→(21,22,23). Selected by our own paired sweeps
+(`.claude/scratch/hanif_route/`); 22 of 40 constants screened were dead code. prvsiyan's public
+agent (same lineage) differs from hanif in several of these constants, which pointed us at which
+knobs are live; the chosen values are our own measurements, not copied settings. Fresh-seed validation (two independent seed
+blocks, 100 paired contexts each): vs prvsiyan +618 / +543 mean margin per game, vs a hanif mirror
+28–2 / 23–7 wins (base: ties), guard opponents unchanged.
+
 Our own contribution is the replay-distillation pipeline in `src/distill/` (2,465 winning
 tapes extracted from public daily ladder dumps of top-40 teams, bit-exact verified) and the
 agents built from it (`submission/main_ladder.py`, live score 1304.0).
