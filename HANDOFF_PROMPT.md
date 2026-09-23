@@ -35,7 +35,7 @@ main_roxy_base.py    812.2
 
 ### Update 2026-09-23: hanif base + our patches (`submission/main_hanif_plus.py`)
 Built by `src/distill/build_hanif_plus.py` (4 asserted patches on hanif's public agent, credited in
-CREDITS.md). Not yet submitted. Fresh-seed paired validation (2 blocks x 100 contexts):
+CREDITS.md). **Submitted 2026-09-23** (ladder score still converging). Fresh-seed paired validation (2 blocks x 100 contexts):
 ```
 vs prvsiyan_current   +618 / +543 mean margin per game (better in 53/60), wins 7/60 vs base 3/60
 vs hanif mirror       51 W / 9 L of 60   (base hanif: ties)
@@ -50,8 +50,8 @@ prvsiyan's clone-race layer never fires vs hanif (its edge is in economy layers)
 Harness: `.claude/scratch/hanif_route/` (common.py, variants.py, anknob.py).
 
 ## IMMEDIATE NEXT STEPS
-1. Choose what to submit: `submission/main_hanif_plus.py` (strongest) or
-   `submission/main_router_v2.py` (fully our own). Submit the preferred one LAST.
+1. Watch the `main_hanif_plus.py` ladder score (converges over hours; noise +-90). Compare with
+   hanif verbatim's 2229.7 before concluding anything.
 2. The wider routing fit for router v2 (`.claude/scratch/kaggle_data/router_signal_big.py`,
    2,240 games) died without output; rerun it if continuing the router-v2 line, rebuild via
    `src/distill/build_router_v2.py`, and only ship if it beats v2 on fresh seeds.
@@ -80,8 +80,8 @@ Harness: `.claude/scratch/hanif_route/` (common.py, variants.py, anknob.py).
 - `.claude/scratch/decoded_agents/` — decoded public agents for study: hanif_current.py,
   prvsiyan_current.py, roxy_v21r1.py, kawa's 10 tapes, plus knob_*.py variants.
 - `.claude/scratch/foreign_tapes/tapes/` — 18 tapes harvested from 320 public notebooks.
-- `src/distill/` — package.py, package_ladder.py, build_router.py, build_router_v2.py,
-  tape_repair.py, improve_hanif.py, build_library.py, replay_lib.py.
+- `src/distill/` — package.py, package_ladder.py, build_router_v2.py, build_hanif_plus.py,
+  build_library.py, replay_lib.py. Dead-end code (router v1, tape repair, RL) is in `archive/`.
 - Kaggle CLI is authenticated at `.venv/bin/kaggle` (no ~/.kaggle/kaggle.json needed).
 - Daily episode dumps: `kaggle datasets download -d kaggle/kaggriculture-episodes-YYYY-MM-DD`
   (~600MB zip, ~640 episodes, ~21GB unpacked — NEVER unpack, stream with zipfile).
